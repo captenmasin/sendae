@@ -1,0 +1,39 @@
+name: Sendae
+icon: public/favicon.svg
+icon_initials: S
+processes:
+  Desktop HMR:
+    command: composer native:dev
+    working_dir: null
+    auto_start: true
+    auto_restart: false
+    restart_when_changed: []
+    env: {}
+  Pail:
+    command: php artisan pail -vv
+    working_dir: null
+    auto_start: true
+    auto_restart: true
+    restart_when_changed: []
+    env: {}
+  Tests:
+    command: php artisan test && pnpm test
+    working_dir: null
+    auto_start: false
+    auto_restart: false
+    restart_when_changed: []
+    env: {}
+  Update:
+    command: composer update && pnpm update
+    working_dir: null
+    auto_start: false
+    auto_restart: false
+    restart_when_changed: []
+    env: {}
+  Build:
+    command: composer desktop:build
+    working_dir: null
+    auto_start: false
+    auto_restart: false
+    restart_when_changed: []
+    env: {}
