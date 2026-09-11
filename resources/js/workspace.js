@@ -51,8 +51,10 @@ export function createWorkspace() {
         connectionForm = ref(null),
         authorizationForm = ref(null),
         resetForm = ref(null);
+    const blueskyForm = ref(null);
     const names = {
         x: 'X',
+        bluesky: 'Bluesky',
         threads: 'Threads',
         facebook: 'Facebook',
         linkedin: 'LinkedIn',
@@ -496,6 +498,7 @@ export function createWorkspace() {
     async function activateWorkspace(id) {
         await flush();
         await api('switchWorkspace', { id });
+        blueskyForm.value = null;
         editor.value = null;
         pending.value = false;
         network.value = 'shared';
@@ -573,6 +576,7 @@ export function createWorkspace() {
             await api('signOut', {});
             authenticated.value = false;
             connectionForm.value = null;
+            blueskyForm.value = null;
             authorizationForm.value = null;
             authMode.value = 'signIn';
             authNotice.value = '';
@@ -641,6 +645,8 @@ export function createWorkspace() {
     function postUrl(p, id) {
         const url = p.snapshot.post_urls?.[id];
         if (typeof url === 'string' && /^https:\/\/(www\.)?threads\.(net|com)\//.test(url)) return url;
+        const blueskyPost = typeof id === 'string' && id.match(/^at:\/\/(did:[a-z]+:[A-Za-z0-9._:%-]+)\/app\.bsky\.feed\.post\/([A-Za-z0-9._:-]+)$/);
+        if (blueskyPost) return 'https://bsky.app/profile/' + encodeURIComponent(blueskyPost[1]) + '/post/' + encodeURIComponent(blueskyPost[2]);
         const provider = accountFor(p)?.provider;
         return provider === 'x'
             ? 'https://x.com/i/web/status/' + encodeURIComponent(id)
@@ -680,7 +686,26 @@ export function createWorkspace() {
             ? 'Awaiting approval'
             : 'Coming soon';
     }
+    async function connectBluesky() {
+        await act(async () => {
+            const data = { ...blueskyForm.value, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+            try {
+                await api('connectBluesky', data);
+            } finally {
+                if (blueskyForm.value) blueskyForm.value.password = '';
+            }
+            blueskyForm.value = null;
+            await api('sync', {});
+            await refresh();
+            notice.value = 'Bluesky account connected.';
+        });
+    }
     async function connect(provider) {
+        if (provider === 'bluesky') {
+            error.value = '';
+            blueskyForm.value = { identifier: '', password: '' };
+            return;
+        }
         await act(async () => {
             await api('connect', { provider });
             notice.value =
@@ -930,6 +955,8 @@ export function createWorkspace() {
         postTitle,
         preview,
         providerStatus,
+        blueskyForm,
+        connectBluesky,
         publicationStatus,
         publicationStatuses,
         queue,

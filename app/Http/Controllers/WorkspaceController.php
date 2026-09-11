@@ -15,7 +15,7 @@ class WorkspaceController extends Controller
     public function openPost(Request $request): array
     {
         $url = $request->validate(['url' => 'required|string|url:https|max:2048'])['url'];
-        abort_unless(in_array(parse_url($url, PHP_URL_HOST), ['x.com', 'www.facebook.com', 'www.linkedin.com', 'threads.net', 'www.threads.net', 'threads.com', 'www.threads.com'], true) && ! parse_url($url, PHP_URL_USER), 422, 'Invalid post address.');
+        abort_unless(in_array(parse_url($url, PHP_URL_HOST), ['bsky.app', 'x.com', 'www.facebook.com', 'www.linkedin.com', 'threads.net', 'www.threads.net', 'threads.com', 'www.threads.com'], true) && ! parse_url($url, PHP_URL_USER), 422, 'Invalid post address.');
         Shell::openExternal($url);
 
         return ['opened' => true];
@@ -153,6 +153,13 @@ class WorkspaceController extends Controller
     public function analytics(Request $r, Synchronizer $s)
     {
         return $s->remote('analytics', $r->all());
+    }
+
+    public function connectBluesky(Request $request, Synchronizer $sync): array
+    {
+        $data = $request->validate(['identifier' => 'required|string|max:253', 'password' => 'required|string|max:100', 'timezone' => 'required|timezone']);
+
+        return $sync->request()->post('connectBluesky', $data)->throw()->json();
     }
 
     public function connect(Request $r, Synchronizer $s): array

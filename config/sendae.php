@@ -7,6 +7,7 @@ return [
     'service_ca' => env('SENDAE_SERVICE_CA'),
     'providers' => [
         'x' => ['label' => 'X'],
+        'bluesky' => ['label' => 'Bluesky'],
         'threads' => ['label' => 'Threads'],
         'facebook' => ['label' => 'Facebook Page'],
         'linkedin' => ['label' => 'LinkedIn profile'],

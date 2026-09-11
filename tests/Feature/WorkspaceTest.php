@@ -59,6 +59,27 @@ class WorkspaceTest extends TestCase
         $this->assertDatabaseCount('drafts', 2);
     }
 
+    public function test_bluesky_connection_forwards_credentials_without_storing_them_locally(): void
+    {
+        Http::fake(['sendae.example/api/connectBluesky' => Http::response(['connected' => true])]);
+        $this->postJson('/local/connectBluesky', ['identifier' => '@sendae.bsky.social', 'password' => 'app-secret', 'timezone' => 'UTC'])
+            ->assertOk()->assertExactJson(['connected' => true]);
+        Http::assertSent(fn ($request) => $request->url() === 'https://sendae.example/api/connectBluesky' && $request['password'] === 'app-secret' && $request->hasHeader('Authorization', 'Bearer test-token'));
+        $this->assertDatabaseCount('accounts', 0);
+        $this->assertDatabaseCount('operation_receipts', 0);
+        $this->postJson('/local/connectBluesky', [])->assertUnprocessable()->assertJsonValidationErrors(['identifier', 'password', 'timezone']);
+        Setting::where('key', 'server_token')->delete();
+        $this->postJson('/local/connectBluesky', ['identifier' => 'sendae.bsky.social', 'password' => 'app-secret', 'timezone' => 'UTC'])->assertUnauthorized();
+        Http::assertSentCount(1);
+    }
+
+    public function test_bluesky_network_overrides_can_be_saved(): void
+    {
+        $content = ['items' => [['text' => 'Shared text', 'media_ids' => []]], 'overrides' => ['bluesky' => [['text' => 'Bluesky text', 'media_ids' => []]]], 'account_ids' => []];
+        $this->postJson('/local/drafts', ['id' => (string) Str::uuid(), 'title' => 'Bluesky draft', 'version' => 0, 'content' => $content])
+            ->assertOk()->assertJsonPath('draft.content.overrides.bluesky.0.text', 'Bluesky text');
+    }
+
     public function test_credentials_are_encrypted_and_never_returned_in_state(): void
     {
         $a = $this->account();

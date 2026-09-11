@@ -148,7 +148,7 @@ const postName = computed({
             </div>
         </div>
         <button
-            v-if="network === 'shared' || ['x', 'threads'].includes(network)"
+            v-if="network === 'shared' || ['x', 'threads', 'bluesky'].includes(network)"
             class="add-post"
             @click="addPost"
         >

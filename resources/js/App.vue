@@ -30,6 +30,19 @@ const pages = {
     Accounts: { component: AccountsPage, icon: '◎' },
     Settings: { component: SettingsPage, icon: '⚙' },
 };
+try {
+    const savedPage = window.sessionStorage.getItem('sendae.page');
+    if (Object.hasOwn(pages, savedPage)) page.value = savedPage;
+} catch {
+    // Navigation remains available when session storage is unavailable.
+}
+watch(page, (value) => {
+    try {
+        window.sessionStorage.setItem('sendae.page', value);
+    } catch {
+        // Storage failures must not interrupt navigation.
+    }
+}, { flush: 'sync' });
 </script>
 
 <template>

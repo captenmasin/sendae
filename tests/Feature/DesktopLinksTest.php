@@ -15,6 +15,7 @@ class DesktopLinksTest extends TestCase
 {
     use RefreshDatabase;
 
+    #[TestWith(['https://bsky.app/profile/did%3Aplc%3Aabc123/post/first'])]
     #[TestWith(['https://x.com/i/web/status/123'])]
     #[TestWith(['https://www.facebook.com/123_456'])]
     #[TestWith(['https://www.linkedin.com/feed/update/urn%3Ali%3Ashare%3A123'])]
@@ -31,6 +32,7 @@ class DesktopLinksTest extends TestCase
         $shell->assertOpenedExternal($url);
     }
 
+    #[TestWith(['https://bsky.app.evil.example/profile/sendae/post/first'])]
     #[TestWith(['file:///tmp/post.html'])]
     #[TestWith(['javascript:alert(1)'])]
     #[TestWith(['http://www.threads.com/@author/post/ABC'])]

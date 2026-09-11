@@ -72,3 +72,14 @@ test('existing networks retain their links and unavailable or unsafe URLs retain
  }
  assert.doesNotMatch(await links('threads',[]),/<a |<code>/);
 });
+
+
+test('Bluesky AT receipts provide post links even after the account is removed', async () => {
+ for (const provider of ['bluesky', null]) {
+  const html = await links(provider, ['at://did:plc:abc123/app.bsky.feed.post/first']);
+  assert.match(html, /href="https:\/\/bsky.app\/profile\/did%3Aplc%3Aabc123\/post\/first"/);
+ }
+ for (const uri of ['at://evil.example/app.bsky.feed.post/first', 'at://did:plc:abc123/app.bsky.feed.like/first', 'at://did:plc:abc123/app.bsky.feed.post/first?bad']) {
+  assert.doesNotMatch(await links('bluesky', [uri]), /<a /);
+ }
+});

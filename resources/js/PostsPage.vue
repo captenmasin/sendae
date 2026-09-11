@@ -90,7 +90,6 @@ const {
                     <button v-else class="outline" @click="newDraft" :disabled="busy">New post</button>
                 </div>
             </div>
-            <p id="post-selection-help" class="posts-selection-help">⌘/Ctrl-click to select · Shift-click for a range</p>
         </section>
         <section class="posts-detail" aria-label="Post details">
             <div v-if="selectedDraftIds.length > 1 || (selectedDraftIds.length === 1 && editor?.id !== selectedDraftIds[0])" class="posts-selection">

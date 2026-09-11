@@ -8,6 +8,8 @@ const {
     authenticated,
     authorizationForm,
     busy,
+    blueskyForm,
+    connectBluesky,
     canReschedule,
     chosen,
     connectionForm,
@@ -39,6 +41,60 @@ const {
 
 <template>
     <template v-if="authenticated">
+        <dialog
+            v-if="blueskyForm"
+            v-modal
+            class="modal-backdrop"
+            aria-labelledby="bluesky-title"
+            @cancel.prevent="!busy && (blueskyForm = null)"
+            @click.self="!busy && (blueskyForm = null)"
+        >
+            <section class="modal">
+                <button
+                    class="modal-close"
+                    @click="blueskyForm = null"
+                    aria-label="Close Bluesky connection"
+                    :disabled="busy"
+                >
+                    ×
+                </button>
+                <h2 id="bluesky-title">Connect Bluesky</h2>
+                <p>Create an app password in Bluesky under Settings → Privacy and security → App passwords.</p>
+                <form @submit.prevent="connectBluesky">
+                    <label>
+                        Handle
+                        <input
+                            v-model="blueskyForm.identifier"
+                            placeholder="you.bsky.social"
+                            autocomplete="username"
+                            maxlength="253"
+                            required
+                            autofocus
+                            :disabled="busy"
+                        />
+                    </label>
+                    <label>
+                        App password
+                        <input
+                            v-model="blueskyForm.password"
+                            type="password"
+                            autocomplete="off"
+                            maxlength="100"
+                            required
+                            :disabled="busy"
+                        />
+                    </label>
+                    <p class="muted">
+                        Use an app password, not your account password. Supports accounts hosted by Bluesky,
+                        with text, threads and up to four images per post.
+                    </p>
+                    <p v-if="error" role="alert">{{ error }}</p>
+                    <button class="primary" :disabled="busy || syncing">
+                        {{ busy ? 'Connecting…' : 'Connect Bluesky' }}
+                    </button>
+                </form>
+            </section>
+        </dialog>
         <dialog
             v-if="workspaceForm"
             v-modal
@@ -124,7 +180,7 @@ const {
                     </label>
                     <label v-if="recoveryAction === 'confirmed'">
                         Provider post ID
-                        <input v-model="recoveryId" required placeholder="Post ID or LinkedIn URN" />
+                        <input v-model="recoveryId" required placeholder="Post ID, Bluesky AT URI or LinkedIn URN" />
                     </label>
                     <label v-else>
                         New date & time

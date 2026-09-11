@@ -54,7 +54,7 @@ test('logos use profile images, recover from image failure and retry updated URL
 });
 
 test('every supported platform has an accessible SVG fallback, including LinkedIn Pages and missing accounts', async () => {
-    for (const [provider, label] of Object.entries({ x: 'X', threads: 'Threads', facebook: 'Facebook', linkedin: 'LinkedIn', linkedin_page: 'LinkedIn Page' })) {
+    for (const [provider, label] of Object.entries({ bluesky: 'Bluesky', x: 'X', threads: 'Threads', facebook: 'Facebook', linkedin: 'LinkedIn', linkedin_page: 'LinkedIn Page' })) {
         const html = await renderToString(Vue.createSSRApp(AccountLogo, { provider }));
         assert.ok(html.includes('aria-label="' + label + '"'));
         assert.match(html, /<svg[^>]*viewBox="0 0 24 24"[^>]*><path d="M/);

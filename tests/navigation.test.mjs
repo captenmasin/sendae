@@ -151,6 +151,53 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
     assert.deepEqual(counts, ['1', '1']);
 });
 
+test('refresh restores every selected sidebar page', async t => {
+    const originalWindow = globalThis.window;
+    const storage = new Map();
+    globalThis.window = { sessionStorage: {
+        getItem: key => storage.get(key) ?? null,
+        setItem: (key, value) => storage.set(key, value),
+    } };
+    t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
+
+    for (const page of ['Queue', 'Published', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
+        const app = application({ authenticated: true, loaded: true });
+        await app.render();
+        const unmount = app.mountNotifications();
+        const button = findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes(page));
+        button.props.onClick();
+        unmount();
+
+        const refreshed = application({ authenticated: true, loaded: true });
+        assert.match(await refreshed.render(), new RegExp('<h1>' + page + '</h1>'));
+        const active = findNode(refreshed.nodes.get('AppSidebar.vue'), node => node?.props?.['aria-current'] === 'page');
+        assert.ok(textContent(active).includes(page));
+    }
+});
+
+test('missing, invalid, or inaccessible saved pages keep navigation usable', async t => {
+    const originalWindow = globalThis.window;
+    t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
+
+    for (const savedPage of [null, 'Removed page', 'constructor', 'unavailable']) {
+        globalThis.window = { sessionStorage: {
+            getItem() {
+                if (savedPage === 'unavailable') throw new Error('Storage unavailable');
+                return savedPage;
+            },
+            setItem() { throw new Error('Storage unavailable'); },
+        } };
+        const app = application({ authenticated: true, loaded: true });
+        assert.match(await app.render(), /<h1>Posts<\/h1>/);
+        const unmount = app.mountNotifications();
+        const settings = findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes('Settings'));
+
+        assert.doesNotThrow(() => settings.props.onClick());
+        assert.match(await app.render(), /<h1>Settings<\/h1>/);
+        unmount();
+    }
+});
+
 test('authentication screens hide the workspace while password reset remains accessible', async () => {
     const app = application({ loaded: true, workspaceForm: { name: 'Private workspace', icon: '◻' } });
     const html = await app.render();
@@ -474,4 +521,39 @@ test('automatic names cover empty, media and network-specific posts while preser
     assert.equal(postTitle(draft('Custom (conflict copy)', 'Different text')), 'Custom (conflict copy)');
     assert.equal(postTitle({ title: '', content: { items: [{ text: '' }], overrides: { threads: [{ text: 'Network-only announcement' }] } } }), 'Network-only announcement');
     assert.equal(postTitle(draft('', '😀'.repeat(61))), '😀'.repeat(60) + '…');
+});
+
+
+test('Bluesky connection uses its app password dialog and clears credentials after submission', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const state = { drafts: [], accounts: [], media: [], publications: [], settings: { paired: true, connections_url: 'https://sendae.example', workspace_id: 'personal', providers: { bluesky: { configured: true } } } };
+    const requests = [];
+    let failed = true;
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        requests.push({ url, data: options.body && JSON.parse(options.body) });
+        return { ok: !(failed && url === '/local/connectBluesky'), status: failed && url === '/local/connectBluesky' ? 422 : 200,
+            json: async () => url === '/local/state' ? { ...state, accounts: [{ id: 'bluesky', provider: 'bluesky', name: 'sendae.bsky.social', status: 'connected' }] } : { message: 'Check your app password.' } };
+    });
+    const app = application({ authenticated: true, loaded: true, page: 'Accounts', state });
+    assert.match(await app.render(), /aria-label="Connect Bluesky"/);
+    await app.workspace.connect('bluesky');
+    const html = await app.render();
+    assert.match(html, /id="bluesky-title">Connect Bluesky/);
+    assert.match(html, /type="password" autocomplete="off"/);
+    assert.deepEqual(requests, []);
+    app.workspace.blueskyForm.value = { identifier: 'sendae.bsky.social', password: 'app-secret' };
+    await app.workspace.connectBluesky();
+    assert.equal(app.workspace.blueskyForm.value.password, '');
+    assert.equal(app.workspace.error.value, 'Check your app password.');
+    assert.deepEqual(requests.map(request => request.url), ['/local/connectBluesky']);
+    failed = false;
+    requests.length = 0;
+    app.workspace.blueskyForm.value.password = 'replacement-secret';
+    await app.workspace.connectBluesky();
+    assert.equal(app.workspace.blueskyForm.value, null);
+    assert.deepEqual(requests.map(request => request.url), ['/local/connectBluesky', '/local/sync', '/local/state']);
+    assert.equal(requests[0].data.password, 'replacement-secret');
+    assert.match(await app.render(), /sendae.bsky.social/);
 });
