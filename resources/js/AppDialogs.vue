@@ -1,5 +1,6 @@
 <script setup>
 import AccountLogo from './AccountLogo.vue';
+import WorkspaceAvatar from './WorkspaceAvatar.vue';
 import { useWorkspace } from './workspace.js';
 
 const vModal = { mounted: (el) => el.showModal(), beforeUnmount: (el) => el.close() };
@@ -36,6 +37,7 @@ const {
     syncing,
     timezone,
     workspaceForm,
+    workspaceImagePreview,
 } = useWorkspace();
 </script>
 
@@ -124,27 +126,22 @@ const {
                         />
                     </label>
                     <label>
-                        Icon
-                        <input
-                            v-model="workspaceForm.icon"
-                            maxlength="32"
-                            required
-                            aria-describedby="workspace-icon-hint"
-                        />
+                        Image
+                        <input type="file" accept="image/jpeg,image/png,image/webp" @change="workspaceForm.imageFile = $event.target.files[0]" />
                     </label>
-                    <div id="workspace-icon-hint" class="muted">Use a symbol, emoji, or initials.</div>
-                    <div class="workspace-icons">
+                    <div class="workspace-image-preview">
+                        <img v-if="workspaceImagePreview" :src="workspaceImagePreview" alt="" />
+                        <WorkspaceAvatar v-else :workspace="{ ...workspaceForm, has_image: false }" :size="48" />
                         <button
-                            v-for="icon in ['◻', '◎', '◈', '✳', '⌘', '⚡', '★', '◒']"
-                            :key="icon"
+                            v-if="workspaceForm.has_image || workspaceForm.imageFile"
                             type="button"
-                            @click="workspaceForm.icon = icon"
-                            :aria-label="'Use ' + icon + ' icon'"
-                            :aria-pressed="workspaceForm.icon === icon"
+                            class="text-button"
+                            @click="workspaceForm.imageFile = null; workspaceForm.removeImage = true; workspaceForm.has_image = false"
                         >
-                            {{ icon }}
+                            Remove image
                         </button>
                     </div>
+                    <p class="muted">Without an image, the workspace uses the first letter of its name.</p>
                     <button class="primary" :disabled="busy || syncing">
                         {{ workspaceForm.id ? 'Save changes' : 'Create workspace' }}
                     </button>

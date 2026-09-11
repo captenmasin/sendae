@@ -42,7 +42,7 @@ class WorkspaceTest extends TestCase
         return Draft::create(['title' => 'Test draft', 'content' => ['items' => $items ?: [['text' => 'Hello world', 'media_ids' => []]], 'overrides' => [], 'account_ids' => $a ? [$a->id] : []]]);
     }
 
-    public function test_desktop_drafts_persist_empty_text_and_conflicting_versions(): void
+    public function test_desktop_drafts_persist_empty_text_and_stale_saves_overwrite(): void
     {
         config(['sendae.mode' => 'desktop']);
         $payload = ['id' => (string) Str::uuid(), 'title' => 'My draft', 'version' => 0, 'content' => ['items' => [['text' => '', 'media_ids' => []]], 'overrides' => [], 'account_ids' => []]];
@@ -51,12 +51,11 @@ class WorkspaceTest extends TestCase
         $payload['content']['items'][0]['text'] = 'First edit';
         $this->postJson('/local/drafts', $payload)->assertOk()->assertJsonPath('draft.version', 2);
         $payload['content']['items'][0]['text'] = 'Offline edit';
-        $response = $this->postJson('/local/drafts', $payload)->assertOk()->assertJsonPath('conflict.title', 'My draft (conflict copy)');
-        $this->assertDatabaseCount('drafts', 2);
-        $this->assertSame('First edit', Draft::find($payload['id'])->content['items'][0]['text']);
-        $this->assertSame('Offline edit', $response->json('conflict.content.items.0.text'));
+        $this->postJson('/local/drafts', $payload)->assertOk()->assertJsonPath('draft.version', 3)->assertJsonPath('draft.content.items.0.text', 'Offline edit')->assertJsonPath('conflict', null);
+        $this->assertDatabaseCount('drafts', 1);
+        $this->assertSame('Offline edit', Draft::find($payload['id'])->content['items'][0]['text']);
         $this->postJson('/local/drafts', $payload)->assertOk();
-        $this->assertDatabaseCount('drafts', 2);
+        $this->assertDatabaseCount('drafts', 1);
     }
 
     public function test_bluesky_connection_forwards_credentials_without_storing_them_locally(): void
@@ -104,20 +103,30 @@ class WorkspaceTest extends TestCase
         app(Attachments::class)->store(UploadedFile::fake()->createWithContent('bad.php', '<?php echo "bad";'));
     }
 
-    public function test_sync_downloads_remote_drafts_and_preserves_conflicts(): void
+    public function test_sync_uploads_dirty_local_drafts_and_ignores_a_server_fork(): void
     {
         config(['sendae.mode' => 'desktop']);
         Setting::write('session_origin', 'https://sendae.example');
         Setting::write('server_token', 'test-token');
         $d = $this->draft();
+        $d->update(['title' => 'Local edit', 'dirty' => true, 'synced_version' => 1]);
         $copy = (string) Str::uuid();
         $remote = ['id' => $d->id, 'title' => 'Remote edit', 'version' => 2, 'content' => $d->content];
         $conflict = ['id' => $copy, 'title' => 'Local edit (conflict copy)', 'version' => 1, 'content' => $d->content];
-        Http::fake(['sendae.example/api/drafts' => Http::response(['draft' => $remote, 'conflict' => $conflict]), 'sendae.example/api/state' => Http::response(['drafts' => [$remote, $conflict], 'accounts' => [], 'media' => [], 'publications' => []])]);
-        $this->assertSame(1, app(Synchronizer::class)->run()['conflicts']);
-        $this->assertDatabaseCount('drafts', 2);
+        $uploaded = ['id' => $d->id, 'title' => 'Local edit', 'version' => 2, 'content' => $d->content];
+        Http::fake(['sendae.example/api/drafts' => Http::sequence()->push(['draft' => $remote, 'conflict' => $conflict])->push(['draft' => $uploaded, 'conflict' => null]), 'sendae.example/api/state' => Http::response(['drafts' => [$uploaded], 'accounts' => [], 'media' => [], 'publications' => []])]);
+
+        $this->assertSame(0, app(Synchronizer::class)->run()['conflicts']);
+        $this->assertDatabaseCount('drafts', 1);
+        $this->assertTrue($d->fresh()->dirty);
+        $this->assertSame('Local edit', $d->fresh()->title);
+        $this->assertSame(2, $d->fresh()->synced_version);
+
+        $this->assertSame(0, app(Synchronizer::class)->run()['conflicts']);
+        $this->assertDatabaseCount('drafts', 1);
         $this->assertFalse($d->fresh()->dirty);
-        $this->assertSame('Remote edit', $d->fresh()->title);
+        $this->assertSame('Local edit', $d->fresh()->title);
+        $this->assertSame(2, $d->fresh()->version);
     }
 
     public function test_mcp_tools_share_draft_operations(): void

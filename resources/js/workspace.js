@@ -24,14 +24,55 @@ export function createWorkspace() {
         busy = ref(false),
         loaded = ref(false);
     const workspaceForm = ref(null);
-    const currentWorkspace = computed(
-        () =>
+    const workspaceImageObjectUrl = ref('');
+    const currentWorkspace = computed(() => {
+        const workspace =
             state.value.settings.workspaces?.find((w) => w.id === state.value.settings.workspace_id) || {
                 id: state.value.settings.workspace_id,
                 name: 'Personal',
-                icon: '◻',
-            },
-    );
+            };
+        const name = (workspace.name || 'Personal').trim();
+        return { ...workspace, icon: workspace.icon || (name && Array.from(name)[0].toUpperCase()) || 'P' };
+    });
+    const theme = ref('system');
+    const systemDark = ref(false);
+    try {
+        const stored = globalThis.localStorage?.getItem('sendae.theme');
+        if (stored === 'light' || stored === 'dark' || stored === 'system') theme.value = stored;
+        systemDark.value = !!globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches;
+    } catch {
+        // Theme stays on system when storage or media queries are unavailable.
+    }
+    const colorScheme = computed(() => (theme.value === 'system' ? (systemDark.value ? 'dark' : 'light') : theme.value));
+    function applyTheme(scheme) {
+        try {
+            if (globalThis.document?.documentElement) document.documentElement.dataset.theme = scheme;
+        } catch {
+            // Rendering can proceed without a document root.
+        }
+    }
+    function setTheme(value) {
+        theme.value = value;
+        try {
+            globalThis.localStorage?.setItem('sendae.theme', value);
+        } catch {
+            // A storage failure must not block the visible theme.
+        }
+        applyTheme(colorScheme.value);
+    }
+    watch(colorScheme, applyTheme, { immediate: true });
+    const gravatarUrl = ref('');
+    const profileForm = ref({
+        name: '',
+        email: '',
+        current_password: '',
+        password: '',
+        password_confirmation: '',
+    });
+    const savingProfile = ref(false);
+    const previewOpen = ref(false);
+    const allowScheduledEdit = ref(false);
+    const workingItems = ref(null);
     const recovery = ref(null),
         recoveryAction = ref('reschedule'),
         recoveryAt = ref(''),
@@ -147,6 +188,10 @@ export function createWorkspace() {
         }
     }
     function changed() {
+        if (editor.value && network.value !== 'shared' && !editor.value.content.overrides[network.value] && workingItems.value) {
+            editor.value.content.overrides[network.value] = workingItems.value;
+            workingItems.value = null;
+        }
         pending.value = true;
         flush().catch(report);
     }
@@ -165,14 +210,6 @@ export function createWorkspace() {
                     const index = state.value.drafts.findIndex((d) => d.id === result.draft.id);
                     if (index < 0) state.value.drafts.unshift(result.draft);
                     else state.value.drafts[index] = result.draft;
-                    if (result.conflict) {
-                        if (editor.value?.id === payload.id) {
-                            editor.value.id = result.conflict.id;
-                            editor.value.version = result.conflict.version;
-                        }
-                        state.value.drafts.unshift(result.conflict);
-                        notice.value = 'Both versions were preserved. Your edit is saved as a conflict copy.';
-                    }
                 }
             } catch (e) {
                 pending.value = true;
@@ -191,6 +228,9 @@ export function createWorkspace() {
             if (editor.value?.id !== draft.id) {
                 editor.value = clone(state.value.drafts.find((post) => post.id === draft.id) || draft);
                 network.value = 'shared';
+                workingItems.value = null;
+                allowScheduledEdit.value = false;
+                previewOpen.value = false;
             }
             page.value = 'Posts';
             selectedDraftIds.value = [editor.value.id];
@@ -205,6 +245,7 @@ export function createWorkspace() {
             editor.value = null;
             selectedDraftIds.value = [];
             selectionAnchor = null;
+            workingItems.value = null;
             return true;
         });
     }
@@ -223,7 +264,8 @@ export function createWorkspace() {
             return;
         await act(async () => {
             notice.value = '';
-            await flush();
+            if (editor.value && !ids.includes(editor.value.id)) await flush();
+            else pending.value = false;
             for (const id of ids) {
                 await api('deleteDraft', { id });
                 state.value.drafts = state.value.drafts.filter((d) => d.id !== id);
@@ -231,6 +273,7 @@ export function createWorkspace() {
                 if (editor.value?.id === id) {
                     editor.value = null;
                     pending.value = false;
+                    workingItems.value = null;
                 }
             }
             notice.value = ids.length === 1 ? 'Post deleted.' : ids.length + ' posts deleted.';
@@ -247,6 +290,9 @@ export function createWorkspace() {
                 content: { items: [{ text: '', media_ids: [] }], overrides: {}, account_ids: [] },
             };
             network.value = 'shared';
+            workingItems.value = null;
+            allowScheduledEdit.value = false;
+            previewOpen.value = false;
             page.value = 'Posts';
             search.value = '';
             selectedDraftIds.value = [editor.value.id];
@@ -305,29 +351,39 @@ export function createWorkspace() {
                 .includes(search.value.toLowerCase()),
         ),
     );
-    const items = computed(() =>
-        editor.value
-            ? network.value === 'shared'
-                ? editor.value.content.items
-                : editor.value.content.overrides[network.value] || editor.value.content.items
-            : [],
-    );
+    const items = computed(() => {
+        if (!editor.value) return [];
+        if (network.value === 'shared') return editor.value.content.items;
+        if (editor.value.content.overrides[network.value]) return editor.value.content.overrides[network.value];
+        return workingItems.value || [];
+    });
     const chosen = computed(() =>
         state.value.accounts.filter((a) => editor.value?.content.account_ids.includes(a.id)),
     );
-    const preview = computed(() => {
-        const target = chosen.value[0];
-        let list = items.value;
-        if (
-            network.value === 'shared' &&
-            target &&
-            ['facebook', 'linkedin', 'linkedin_page'].includes(target.provider)
-        )
-            list = [
-                { text: list.map((i) => i.text).join('\n\n'), media_ids: list.flatMap((i) => i.media_ids) },
-            ];
+    function previewItemsFor(account) {
+        const key = account?.provider;
+        let list = editor.value?.content.items || [];
+        if (key && editor.value?.content.overrides[key]) list = editor.value.content.overrides[key];
+        else if (network.value !== 'shared') list = items.value;
+        if (key && ['facebook', 'linkedin', 'linkedin_page'].includes(key))
+            list = [{ text: list.map((i) => i.text).join('\n\n'), media_ids: list.flatMap((i) => i.media_ids) }];
         return list;
+    }
+    const preview = computed(() => previewItemsFor(chosen.value[0]));
+    const sharedOverrideWarning = computed(() => {
+        if (!editor.value || network.value !== 'shared') return '';
+        const custom = Object.keys(editor.value.content.overrides || {});
+        if (!custom.some((key) => chosen.value.some((account) => account.provider === key))) return '';
+        return 'Network-specific versions will not change when you edit the shared draft.';
     });
+    const scheduledLocked = computed(() => {
+        if (!editor.value) return false;
+        const statuses = publicationStatuses.value[editor.value.id] || {};
+        return ['scheduled', 'retry', 'publishing'].some((status) => statuses[status]);
+    });
+    function unlockScheduledEdit() {
+        allowScheduledEdit.value = true;
+    }
     const queue = computed(() =>
         state.value.publications
             .filter((p) => ['scheduled', 'retry', 'publishing'].includes(p.status))
@@ -382,22 +438,28 @@ export function createWorkspace() {
     }, { flush: 'sync' });
     function customize(key) {
         network.value = key;
-        if (key !== 'shared' && !editor.value.content.overrides[key]) {
-            let base = clone(editor.value.content.items);
-            if (['facebook', 'linkedin', 'linkedin_page'].includes(key))
-                base = [
-                    {
-                        text: base.map((i) => i.text).join('\n\n'),
-                        media_ids: base.flatMap((i) => i.media_ids),
-                    },
-                ];
-            editor.value.content.overrides[key] = base;
-            changed();
+        if (!editor.value || key === 'shared') {
+            workingItems.value = null;
+            return;
         }
+        if (editor.value.content.overrides[key]) {
+            workingItems.value = null;
+            return;
+        }
+        let base = clone(editor.value.content.items);
+        if (['facebook', 'linkedin', 'linkedin_page'].includes(key))
+            base = [
+                {
+                    text: base.map((i) => i.text).join('\n\n'),
+                    media_ids: base.flatMap((i) => i.media_ids),
+                },
+            ];
+        workingItems.value = base;
     }
     function resetOverride() {
         delete editor.value.content.overrides[network.value];
         network.value = 'shared';
+        workingItems.value = null;
         changed();
     }
     function addPost() {
@@ -437,11 +499,10 @@ export function createWorkspace() {
         syncing.value = true;
         try {
             await flush();
-            const result = await api('sync', {});
+            await api('sync', {});
             await refresh();
             if (editor.value && !pending.value && !saving.value)
                 editor.value = clone(state.value.drafts.find((d) => d.id === editor.value.id) || null);
-            if (result.conflicts) notice.value = 'Conflicting edits were saved as separate drafts.';
         } catch (e) {
             if (manual) report(e);
         } finally {
@@ -493,14 +554,40 @@ export function createWorkspace() {
         });
     }
     function editWorkspace(create = false) {
-        workspaceForm.value = create ? { name: '', icon: '◻' } : clone(currentWorkspace.value);
+        workspaceForm.value = create
+            ? { name: '', imageFile: null, removeImage: false, has_image: false }
+            : { ...clone(currentWorkspace.value), imageFile: null, removeImage: false };
     }
+    const workspaceImagePreview = computed(() => {
+        const form = workspaceForm.value;
+        if (!form) return '';
+        if (workspaceImageObjectUrl.value) return workspaceImageObjectUrl.value;
+        if (form.has_image && form.id && !form.removeImage) return '/local/workspaceImage/' + form.id;
+        return '';
+    });
+    watch(
+        () => workspaceForm.value?.imageFile,
+        (file) => {
+            if (workspaceImageObjectUrl.value) {
+                try {
+                    URL.revokeObjectURL(workspaceImageObjectUrl.value);
+                } catch {
+                    // Object URLs are unavailable in some test renderers.
+                }
+                workspaceImageObjectUrl.value = '';
+            }
+            if (file && typeof URL !== 'undefined' && URL.createObjectURL) {
+                workspaceImageObjectUrl.value = URL.createObjectURL(file);
+            }
+        },
+    );
     async function activateWorkspace(id) {
         await flush();
         await api('switchWorkspace', { id });
         blueskyForm.value = null;
         editor.value = null;
         pending.value = false;
+        workingItems.value = null;
         network.value = 'shared';
         search.value = '';
         page.value = 'Posts';
@@ -521,13 +608,47 @@ export function createWorkspace() {
     }
     async function saveWorkspace() {
         await act(async () => {
-            const isNew = !workspaceForm.value.id;
-            const workspace = await api('saveWorkspace', workspaceForm.value);
+            const form = workspaceForm.value;
+            const isNew = !form.id;
+            const workspace = await api('saveWorkspace', {
+                ...(form.id ? { id: form.id } : {}),
+                name: form.name,
+            });
+            if (form.imageFile) {
+                const data = new FormData();
+                data.append('id', workspace.id);
+                data.append('file', form.imageFile);
+                await api('saveWorkspaceImage', data);
+            } else if (form.removeImage && workspace.id) {
+                await api('deleteWorkspaceImage', { id: workspace.id });
+            }
             workspaceForm.value = null;
             if (isNew) await activateWorkspace(workspace.id);
             else await refresh();
         });
         await sync();
+    }
+    async function updateProfile() {
+        await act(async () => {
+            savingProfile.value = true;
+            try {
+                const data = { name: profileForm.value.name, email: profileForm.value.email };
+                if (profileForm.value.current_password) data.current_password = profileForm.value.current_password;
+                if (profileForm.value.password) {
+                    data.password = profileForm.value.password;
+                    data.password_confirmation = profileForm.value.password_confirmation;
+                }
+                const profile = await api('profile', data);
+                state.value.settings.name = profile.name;
+                state.value.settings.email = profile.email;
+                profileForm.value.current_password = '';
+                profileForm.value.password = '';
+                profileForm.value.password_confirmation = '';
+                notice.value = 'Account saved.';
+            } finally {
+                savingProfile.value = false;
+            }
+        });
     }
     async function signIn() {
         await act(async () => {
@@ -796,6 +917,7 @@ export function createWorkspace() {
             authenticated.value = false;
             editor.value = null;
             pending.value = false;
+            workingItems.value = null;
             authMode.value = 'signIn';
             authNotice.value = result.message;
         });
@@ -871,10 +993,44 @@ export function createWorkspace() {
             e.returnValue = '';
         }
     }
+    watch(
+        () => [state.value.settings.name, state.value.settings.email],
+        () => {
+            if (savingProfile.value) return;
+            profileForm.value.name = state.value.settings.name || '';
+            profileForm.value.email = state.value.settings.email || '';
+        },
+        { immediate: true },
+    );
+    watch(
+        () => state.value.settings.email,
+        async (email, _previous, onCleanup) => {
+            let cancelled = false;
+            onCleanup(() => {
+                cancelled = true;
+            });
+            gravatarUrl.value = '';
+            const normalized = (email || '').trim().toLowerCase();
+            if (!normalized || !globalThis.crypto?.subtle) return;
+            const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+            if (cancelled) return;
+            const hash = [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+            gravatarUrl.value = 'https://www.gravatar.com/avatar/' + hash + '?s=80&d=identicon';
+        },
+        { immediate: true },
+    );
     onMounted(async () => {
         countdownTimer = setInterval(() => {
             now.value = Date.now();
         }, 1000);
+        try {
+            const media = globalThis.matchMedia?.('(prefers-color-scheme: dark)');
+            media?.addEventListener?.('change', (event) => {
+                systemDark.value = event.matches;
+            });
+        } catch {
+            // System theme changes are optional.
+        }
         try {
             await refresh();
         } catch (e) {
@@ -897,11 +1053,51 @@ export function createWorkspace() {
         window.removeEventListener('beforeunload', beforeUnload);
         window.removeEventListener('keydown', keyboard);
     });
+    const activity = computed(() => {
+        const events = [];
+        for (const draft of state.value.drafts) {
+            if (draft.created_at) {
+                events.push({
+                    id: 'created:' + draft.id,
+                    type: 'created',
+                    title: postTitle(draft),
+                    at: draft.created_at,
+                    draft,
+                });
+            }
+            if (draft.updated_at && draft.updated_at !== draft.created_at) {
+                events.push({
+                    id: 'updated:' + draft.id + ':' + draft.updated_at,
+                    type: 'updated',
+                    title: postTitle(draft),
+                    at: draft.updated_at,
+                    draft,
+                });
+            }
+        }
+        for (const publication of state.value.publications) {
+            events.push({
+                id: publication.id,
+                type: publication.status,
+                title: postTitle(publication),
+                at:
+                    publication.published_at ||
+                    publication.scheduled_at ||
+                    publication.updated_at ||
+                    publication.created_at,
+                account: accountFor(publication),
+                draft: state.value.drafts.find((draft) => draft.id === publication.draft_id),
+            });
+        }
+        return events.filter((event) => event.at).sort((a, b) => new Date(b.at) - new Date(a.at));
+    });
 
     return {
         accountFor,
+        activity,
         addPost,
         allDraftsSelected,
+        allowScheduledEdit,
         api,
         attachment,
         authMode,
@@ -916,6 +1112,7 @@ export function createWorkspace() {
         chooseAuth,
         chosen,
         closeDraft,
+        colorScheme,
         confirmPassword,
         connect,
         connectionForm,
@@ -937,6 +1134,7 @@ export function createWorkspace() {
         error,
         flush,
         fullName,
+        gravatarUrl,
         history,
         items,
         loaded,
@@ -954,6 +1152,9 @@ export function createWorkspace() {
         postUrl,
         postTitle,
         preview,
+        previewItemsFor,
+        previewOpen,
+        profileForm,
         providerStatus,
         blueskyForm,
         connectBluesky,
@@ -976,15 +1177,19 @@ export function createWorkspace() {
         saveSlots,
         saveWorkspace,
         saving,
+        savingProfile,
         schedule,
         scheduleAt,
         scheduleMode,
         scheduleOpen,
+        scheduledLocked,
         search,
         selectAllDrafts,
         selectDraft,
         selectConnection,
         selectedDraftIds,
+        setTheme,
+        sharedOverrideWarning,
         signOut,
         slots,
         slotsAccount,
@@ -993,8 +1198,12 @@ export function createWorkspace() {
         switchWorkspace,
         sync,
         syncing,
+        theme,
         timezone,
+        unlockScheduledEdit,
+        updateProfile,
         upload,
         workspaceForm,
+        workspaceImagePreview,
     };
 }

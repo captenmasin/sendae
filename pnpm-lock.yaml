@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@lucide/vue':
+        specifier: ^1.45.0
+        version: 1.45.0(vue@3.5.42)
       vue:
         specifier: ^3.5.42
         version: 3.5.42
@@ -82,6 +85,11 @@ packages:
     engines: {node: '>=22.13.0'}
     os: [darwin, linux]
     hasBin: true
+
+  '@lucide/vue@1.45.0':
+    resolution: {integrity: sha512-tbMlusqK6brViI1xj8nsXAgNDyJOvNeOdOQlBI0hOWCAbnBrPRlanoQ6EygDEMv3dqwXfCZPb4a0/ImtI5KAmQ==}
+    peerDependencies:
+      vue: '>=3.0.1'
 
   '@oxc-project/types@0.149.0':
     resolution: {integrity: sha512-Efcc+iF0j3Bf67YjEqIqWXbX5XddXoK/Mw4K1/JuXwRCZ8N16VR7iT23nlCc9XrveFVh/E5Rqs2StT0V8v9LdA==}
@@ -884,6 +892,10 @@ snapshots:
       - react-devtools-core
       - utf-8-validate
     optional: true
+
+  '@lucide/vue@1.45.0(vue@3.5.42)':
+    dependencies:
+      vue: 3.5.42
 
   '@oxc-project/types@0.149.0': {}
 

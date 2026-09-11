@@ -35,6 +35,21 @@ class DraftDeletionTest extends TestCase
         Http::assertSent(fn ($request) => $request->url() === 'https://sendae-server.test/api/deleteDraft' && $request['version'] === 2);
     }
 
+    public function test_unsynced_and_conflict_copies_delete_with_version_zero(): void
+    {
+        config(['sendae.service_url' => 'https://sendae-server.test']);
+        Http::preventStrayRequests();
+        Setting::write('server_token', 'token');
+        Setting::write('session_origin', 'https://sendae-server.test');
+        Setting::write('workspace_id', str_repeat('a', 64));
+        $draft = Draft::create(['title' => 'Local only', 'content' => ['items' => [['text' => 'Unsynced', 'media_ids' => []]], 'overrides' => [], 'account_ids' => []]]);
+        Http::fake(['sendae-server.test/api/deleteDraft' => Http::response(['deleted' => true])]);
+
+        $this->postJson('/local/deleteDraft', ['id' => $draft->id])->assertJsonPath('deleted', true);
+        $this->assertSoftDeleted($draft);
+        Http::assertSent(fn ($request) => $request->url() === 'https://sendae-server.test/api/deleteDraft' && $request['version'] === 0);
+    }
+
     public function test_sync_removes_remote_deletions_even_with_pending_local_edits(): void
     {
         config(['sendae.service_url' => 'https://sendae-server.test']);

@@ -9,12 +9,14 @@ use App\Models\Publication;
 use App\Models\Setting;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Native\Desktop\Facades\Shell;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class Synchronizer
 {
@@ -71,7 +73,7 @@ class Synchronizer
             $response = $this->client()->post('session', $credentials)->throw();
             abort_unless($response->successful(), 502, 'Sendae sign-in could not be completed.');
             $data = Validator::make($response->json(), [
-                'token' => 'required|string|max:10000', 'workspace_id' => 'required|string|size:64', 'email' => 'required|email',
+                'token' => 'required|string|max:10000', 'workspace_id' => 'required|string|size:64', 'name' => 'nullable|string|max:100', 'email' => 'required|email',
             ])->validate();
             $changed = Setting::read('workspace_id') !== $data['workspace_id'];
             DB::transaction(function () use ($data, $changed) {
@@ -86,6 +88,7 @@ class Synchronizer
                 Setting::write('workspace_id', $data['workspace_id']);
                 Setting::write('session_origin', rtrim(config('sendae.service_url'), '/'));
                 Setting::write('account_email', $data['email']);
+                Setting::write('account_name', $data['name'] ?? '');
                 Setting::where('key', 'server_url')->delete();
             });
 
@@ -98,9 +101,13 @@ class Synchronizer
         $this->requireAuth();
 
         return Cache::lock('sendae-sync', 180)->block(2, function () use ($data) {
+            $payload = [
+                'name' => $data['name'],
+                'icon' => trim((string) ($data['icon'] ?? '')) ?: mb_strtoupper(mb_substr($data['name'], 0, 1)),
+            ];
             $response = isset($data['id'])
-                ? $this->request()->patch('workspaces/'.$data['id'], collect($data)->only(['name', 'icon'])->all())
-                : $this->request()->post('workspaces', $data);
+                ? $this->request()->patch('workspaces/'.$data['id'], $payload)
+                : $this->request()->post('workspaces', $payload);
             $workspace = $response->throw()->json();
             $workspaces = $this->request()->get('workspaces')->throw()->json();
             Setting::write('workspaces', json_encode($workspaces));
@@ -145,7 +152,7 @@ class Synchronizer
                     abort_unless($response->successful(), 502, 'Sendae sign-out could not be completed.');
                 }
             }
-            Setting::whereIn('key', ['server_token', 'session_origin', 'account_email'])->delete();
+            Setting::whereIn('key', ['server_token', 'session_origin', 'account_email', 'account_name'])->delete();
 
             return ['signed_out' => true];
         });
@@ -157,7 +164,7 @@ class Synchronizer
 
         return Cache::lock('sendae-sync', 180)->block(2, function () use ($id) {
             $draft = Draft::withTrashed()->findOrFail($id);
-            $response = $this->request()->post('deleteDraft', ['id' => $id, 'version' => $draft->synced_version])->throw();
+            $response = $this->request()->asJson()->post('deleteDraft', ['id' => $id, 'version' => (int) ($draft->synced_version ?? 0)])->throw();
             abort_unless($response->json('deleted') === true, 502, 'Sendae could not delete this draft.');
             $draft->delete();
 
@@ -170,7 +177,6 @@ class Synchronizer
         $this->requireAuth();
 
         return Cache::lock('sendae-sync', 180)->block(2, function () use ($push) {
-            $conflicts = 0;
             if ($push) {
                 foreach (Media::where('synced', false)->whereNotNull('path')->get() as $m) {
                     $file = Storage::disk('local')->readStream($m->path);
@@ -192,18 +198,17 @@ class Synchronizer
                         continue;
                     }
                     $result = $response->throw()->json();
-                    DB::transaction(function () use ($draft, $version, $result, &$conflicts) {
+                    DB::transaction(function () use ($draft, $version, $result) {
                         $current = Draft::lockForUpdate()->find($draft->id);
-                        if ($result['conflict']) {
-                            $copy = $result['conflict'];
-                            Draft::updateOrCreate(['id' => $copy['id']], ['title' => $copy['title'], 'content' => $copy['content'], 'version' => $copy['version'], 'synced_version' => $copy['version'], 'dirty' => false]);
-                            $conflicts++;
+                        if (! $current) {
+                            return;
                         }
-                        if ($current->version === $version) {
-                            $current->update(['title' => $result['draft']['title'], 'content' => $result['draft']['content'], 'version' => $result['draft']['version'], 'synced_version' => $result['draft']['version'], 'dirty' => false]);
-                        } else {
+                        if (($result['conflict'] ?? null) || $current->version !== $version) {
                             $current->update(['synced_version' => $result['draft']['version']]);
+
+                            return;
                         }
+                        $current->update(['title' => $result['draft']['title'], 'content' => $result['draft']['content'], 'version' => $result['draft']['version'], 'synced_version' => $result['draft']['version'], 'dirty' => false]);
                     });
                 }
             }
@@ -224,7 +229,7 @@ class Synchronizer
                     }
                 }
                 foreach ($state['accounts'] as $a) {
-                    Account::updateOrCreate(['id' => $a['id']], collect($a)->only(['name', 'provider', 'provider_id', 'timezone', 'slots', 'status'])->all() + ['avatar_url' => $a['avatar_url'] ?? null]);
+                    Account::updateOrCreate(['id' => $a['id']], collect($a)->only(['name', 'provider', 'provider_id', 'timezone', 'slots', 'status'])->all() + ['avatar_url' => $a['avatar_url'] ?? null, 'verified' => (bool) ($a['verified'] ?? false)]);
                 }
                 Account::whereNotIn('id', array_column($state['accounts'], 'id'))->delete();
                 foreach ($state['publications'] as $p) {
@@ -241,8 +246,10 @@ class Synchronizer
                 Storage::disk('local')->put($path, $response->body());
                 $m->update(['path' => $path]);
             }
+            $this->cacheWorkspaceImages();
+            $this->notifyPublished();
 
-            return ['synced' => true, 'conflicts' => $conflicts];
+            return ['synced' => true, 'conflicts' => 0];
         });
     }
 
@@ -303,5 +310,99 @@ class Synchronizer
         $this->run(false);
 
         return $result;
+    }
+
+    public function updateProfile(array $data): array
+    {
+        $this->requireAuth();
+        $profile = $this->request()->patch('profile', $data)->throw()->json();
+        $profile = Validator::make($profile, ['name' => 'required|string|max:100', 'email' => 'required|email'])->validate();
+        Setting::write('account_name', $profile['name']);
+        Setting::write('account_email', $profile['email']);
+
+        return $profile;
+    }
+
+    public function saveWorkspaceImage(string $id, UploadedFile $file): array
+    {
+        $this->requireAuth();
+
+        return Cache::lock('sendae-sync', 180)->block(2, function () use ($id, $file) {
+            $response = $this->request()->attach('file', $file->get(), $file->getClientOriginalName())->post('workspaces/'.$id.'/image')->throw()->json();
+            $workspaces = $this->request()->get('workspaces')->throw()->json();
+            Setting::write('workspaces', json_encode($workspaces));
+            Storage::disk('local')->put('workspace-images/'.$id, $file->get());
+
+            return $response;
+        });
+    }
+
+    public function deleteWorkspaceImage(string $id): array
+    {
+        $this->requireAuth();
+
+        return Cache::lock('sendae-sync', 180)->block(2, function () use ($id) {
+            $this->request()->delete('workspaces/'.$id.'/image')->throw();
+            $workspaces = $this->request()->get('workspaces')->throw()->json();
+            Setting::write('workspaces', json_encode($workspaces));
+            Storage::disk('local')->delete('workspace-images/'.$id);
+
+            return ['deleted' => true];
+        });
+    }
+
+    public function workspaceImage(string $id): BinaryFileResponse
+    {
+        $this->requireAuth();
+        $path = 'workspace-images/'.$id;
+        abort_unless(Storage::disk('local')->exists($path), 404);
+
+        return response()->file(Storage::disk('local')->path($path), ['Content-Type' => Storage::disk('local')->mimeType($path) ?: 'image/jpeg', 'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, max-age=3600']);
+    }
+
+    private function cacheWorkspaceImages(): void
+    {
+        $workspaces = json_decode(Setting::read('workspaces', '[]'), true) ?: [];
+        $keep = [];
+        foreach ($workspaces as $workspace) {
+            $path = 'workspace-images/'.$workspace['id'];
+            if (! ($workspace['has_image'] ?? false)) {
+                Storage::disk('local')->delete($path);
+
+                continue;
+            }
+            $keep[] = $workspace['id'];
+            if (Storage::disk('local')->exists($path)) {
+                continue;
+            }
+            $response = $this->request()->get('workspaces/'.$workspace['id'].'/image');
+            if ($response->successful()) {
+                Storage::disk('local')->put($path, $response->body());
+            }
+        }
+        foreach (Storage::disk('local')->files('workspace-images') as $file) {
+            if (! in_array(basename($file), $keep, true)) {
+                Storage::disk('local')->delete($file);
+            }
+        }
+    }
+
+    private function notifyPublished(): void
+    {
+        $workspaceId = Setting::read('workspace_id', '');
+        $published = Publication::where('status', 'published')->orderBy('id')->pluck('id')->all();
+        $previous = json_decode(Setting::read('notified_publications:'.$workspaceId, 'null'), true);
+        if (! is_array($previous)) {
+            Setting::write('notified_publications:'.$workspaceId, json_encode($published));
+
+            return;
+        }
+        foreach (array_diff($published, $previous) as $id) {
+            $publication = Publication::find($id);
+            if ($publication) {
+                app(DesktopNotifications::class)->published($publication);
+            }
+        }
+        Setting::write('notified_publications:'.$workspaceId, json_encode($published));
     }
 }

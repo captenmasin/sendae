@@ -6,7 +6,8 @@ paths:
 
 # Services
 
-## Draft deletion sync and local HTTPS
+## Local drafts are the source of truth
+Desktop draft content overwrites the server on sync. A stale version updates the existing draft in place; do not create conflict copies. Keep dirty local drafts when a remote payload disagrees, and leave already-scheduled publication snapshots unchanged.
 Draft deletion retains tombstones so stale sync cannot recreate deleted drafts; publication snapshots remain intact. Confirm server deletion before removing the local draft. The local service uses Herd HTTPS; SENDAE_SERVICE_CA supplies its CA file to bundled PHP without disabling TLS verification.
 
 ## Multiple workspaces per account

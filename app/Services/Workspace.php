@@ -21,6 +21,7 @@ class Workspace
             'media' => Media::latest()->get(), 'publications' => Publication::orderByDesc('scheduled_at')->get(),
             'settings' => ['workspace_id' => Setting::read('workspace_id'), 'workspaces' => json_decode(Setting::read('workspaces', '[]'), true), 'mode' => 'desktop', 'paired' => app(Synchronizer::class)->signedIn(),
                 'email' => Setting::read('account_email', ''),
+                'name' => Setting::read('account_name', ''),
                 'mcp_url' => rtrim(config('sendae.service_url'), '/').'/mcp',
                 'connections_url' => rtrim(config('sendae.service_url'), '/'),
                 'providers' => Setting::read('providers') ? json_decode(Setting::read('providers'), true) : []]];
@@ -62,12 +63,6 @@ class Workspace
         return $this->once('save', $data, function () use ($data, $sync) {
             $draft = Draft::withTrashed()->lockForUpdate()->find($data['id']);
             abort_if($draft?->trashed(), 410, 'This draft was deleted.');
-            if ($draft && $draft->version !== $data['version']) {
-                // Preserve both complete versions; conflicts never overwrite the scheduled snapshot.
-                $copy = Draft::create(['title' => $data['title'].' (conflict copy)', 'content' => $data['content'], 'dirty' => ! $sync]);
-
-                return ['draft' => $draft, 'conflict' => $copy];
-            }
             $draft ??= new Draft(['id' => $data['id'], 'version' => 0]);
             $draft->fill(['title' => $data['title'], 'content' => $data['content'], 'version' => $draft->version + 1, 'dirty' => ! $sync])->save();
 

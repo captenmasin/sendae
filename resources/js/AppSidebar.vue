@@ -1,5 +1,7 @@
 <script setup>
 import { computed } from 'vue';
+import Icon from './Icon.vue';
+import WorkspaceAvatar from './WorkspaceAvatar.vue';
 import { useWorkspace } from './workspace.js';
 
 const props = defineProps({ pages: { type: Object, required: true } });
@@ -15,7 +17,6 @@ const {
     saving,
     state,
     switchWorkspace,
-    sync,
     syncing,
 } = useWorkspace();
 </script>
@@ -27,7 +28,7 @@ const {
             <span>✳</span>
         </a>
         <div class="workspace-picker">
-            <span class="workspace-avatar" aria-hidden="true">{{ currentWorkspace.icon }}</span>
+            <WorkspaceAvatar :workspace="currentWorkspace" />
             <select
                 aria-label="Workspace"
                 :value="currentWorkspace.id"
@@ -50,11 +51,11 @@ const {
                 :disabled="busy || syncing"
                 aria-label="New workspace"
             >
-                ＋
+                <Icon name="Plus" :size="16" />
             </button>
         </div>
         <button class="primary new-draft" @click="newDraft" :disabled="busy">
-            ＋
+            <Icon name="Plus" :size="16" />
             <span>New post</span>
             <kbd>⌘ N</kbd>
         </button>
@@ -66,7 +67,7 @@ const {
                 :class="{ active: page === label }"
                 @click="page = label"
             >
-                <span class="nav-icon">{{ view.icon }}</span>
+                <span class="nav-icon"><Icon :name="view.icon" :size="16" /></span>
                 {{ label }}
                 <span v-if="label === 'Posts' || label === 'Queue'" class="count">
                     {{ label === 'Posts' ? state.drafts.length : queue.length }}
@@ -80,21 +81,9 @@ const {
                 :aria-current="page === 'Settings' ? 'page' : undefined"
                 @click="page = 'Settings'"
             >
-                ⚙
+                <Icon name="Settings" :size="16" />
                 <span>Settings</span>
             </button>
-            <div class="sync-status">
-                <i :class="{ connected: state.settings.paired }"></i>
-                {{ state.settings.paired ? 'Connected to Sendae' : 'Saved on this Mac' }}
-                <button
-                    v-if="state.settings.paired"
-                    @click="sync()"
-                    :disabled="syncing"
-                    aria-label="Synchronize now"
-                >
-                    ↻
-                </button>
-            </div>
         </div>
     </aside>
 </template>

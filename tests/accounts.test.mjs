@@ -14,17 +14,19 @@ test('platform cards identify each account and remove disconnected accounts from
  const source=readFileSync(new URL('../resources/js/AccountsPage.vue',import.meta.url),'utf8');
  const template=source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>'));
  const render=new Function('Vue',compile(template,{mode:'function',prefixIdentifiers:true}).code)(Vue);
- const html=await renderToString(Vue.createSSRApp({render,components:{AccountLogo},data:()=>({
+ const Icon={props:['name','size'],template:'<svg></svg>'};
+ const html=await renderToString(Vue.createSSRApp({render,components:{AccountLogo,Icon},data:()=>({
   sync:()=>{}, connect:()=>{}, editSlots:()=>{}, disconnect:()=>{}, providerStatus:()=>'',
   names:{threads:'Threads',facebook:'Facebook',x:'X'}, symbols:{threads:'@',facebook:'f',x:'X'}, busy:false,syncing:false,
   state:{accounts:[
-   {id:'threads',provider:'threads',name:'capten_masin',avatar_url:'https://images.example/profile.jpg',status:'connected',timezone:'Europe/London',slots:[]},
+   {id:'threads',provider:'threads',name:'capten_masin',avatar_url:'https://images.example/profile.jpg',status:'connected',timezone:'Europe/London',slots:[],verified:true},
    {id:'facebook',provider:'facebook',name:'Novogamer',status:'connected',timezone:'Europe/London',slots:[{day:1,time:'09:00'}]},
    {id:'removed',provider:'facebook',name:'Removed Page',status:'disconnected',timezone:'Europe/London',slots:[]},
   ]},canConnect:()=>true,
  })}));
- assert.match(html,/>@capten_masin<\/h3>/);
- assert.match(html,/>Novogamer<\/h3>/);
+ assert.match(html,/@capten_masin/);
+ assert.match(html,/>Verified</);
+ assert.match(html,/>Novogamer /);
  assert.match(html,/aria-label="Disconnect capten_masin"/);
  assert.match(html,/aria-label="Disconnect Novogamer"/);
  assert.match(html,/title="Disconnect Novogamer"><svg/);

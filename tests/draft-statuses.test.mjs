@@ -19,9 +19,10 @@ async function renderDraft(publications,{title='My draft',editorOpen=false,query
  const {publicationStatuses,drafts,draftSummary,postTitle,customTitle}=runInNewContext(source.slice(source.indexOf('const publicationStatuses ='),source.indexOf('const items = computed('))+';({publicationStatuses,drafts,draftSummary,postTitle,customTitle})',{computed:Vue.computed,state,search});
  const app=()=>Vue.createSSRApp({render,setup:()=>({
   state,publicationStatuses,drafts,draftSummary,postTitle,customTitle,postName:customTitle(draft),search,editor:editorOpen?draft:null,
-  date:()=>'',symbols:{},names:{},network:'shared',chosen:[],items:[],preview:[],
+  date:()=>'',symbols:{},names:{},network:'shared',chosen:[],items:[],preview:[],previewItemsFor:()=>[],
   busy,saving:false,pending:false,newDraft:()=>{},selectDraft:()=>{},closeDraft:()=>{},changed:()=>{},
   resetOverride:()=>{},addPost:()=>{},deleteDraft:()=>{},
+  previewOpen:false,scheduledLocked:false,allowScheduledEdit:false,sharedOverrideWarning:'',locked:false,unlockScheduledEdit:()=>{},
   selectedDraftIds:selected,allDraftsSelected:drafts.value.length>0&&drafts.value.every(d=>selected.includes(d.id)),selectAllDrafts:()=>{},deleteDrafts:()=>{},syncing:false,
  })});
  return {html:await renderToString(app()),renderHtml:()=>renderToString(app()),state,publicationStatuses,drafts,search};
@@ -119,6 +120,7 @@ test('creating a post leaves its optional name blank and clears search that woul
   authenticated:Vue.ref(true),busy:Vue.ref(false),editor:Vue.ref(null),network:Vue.ref('x'),
   page:Vue.ref('Published'),search:Vue.ref('old post'),selectedDraftIds:Vue.ref(['old']),selectionAnchor:'old',
   act:fn=>fn(),flush:async()=>{},changed:()=>{},crypto:{randomUUID:()=> 'new-post'},
+  workingItems:Vue.ref(null),allowScheduledEdit:Vue.ref(false),previewOpen:Vue.ref(false),
  };
  await runInNewContext(source.slice(source.indexOf('async function newDraft()'),source.indexOf('const publicationStatuses ='))+';newDraft()',context);
 

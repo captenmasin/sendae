@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue';
 import AccountLogo from './AccountLogo.vue';
+import Icon from './Icon.vue';
 import { useWorkspace } from './workspace.js';
 
 const {
@@ -124,9 +125,9 @@ async function dropOnDay(day) {
                     <p>Times in {{ localTimezone }}</p>
                 </div>
                 <div class="calendar-navigation">
-                    <button class="outline" aria-label="Previous month" @click="changeMonth(-1)">‹</button>
+                    <button class="outline" aria-label="Previous month" @click="changeMonth(-1)"><Icon name="ChevronLeft" :size="16" /></button>
                     <button class="outline" @click="showToday">Today</button>
-                    <button class="outline" aria-label="Next month" @click="changeMonth(1)">›</button>
+                    <button class="outline" aria-label="Next month" @click="changeMonth(1)"><Icon name="ChevronRight" :size="16" /></button>
                 </div>
             </div>
             <div class="calendar-scroll" role="region" aria-labelledby="calendar-month" tabindex="0">
@@ -227,7 +228,7 @@ async function dropOnDay(day) {
             <p>No queued posts for this day.</p>
         </div>
         <div v-else-if="!publications.length" class="empty">
-            <div class="empty-art">{{ page === 'Queue' ? '◷' : '↗' }}</div>
+            <div class="empty-art"><Icon :name="page === 'Queue' ? 'Clock' : 'ArrowUpRight'" :size="36" /></div>
             <h2>{{ page === 'Queue' ? 'No queued posts' : 'No publications' }}</h2>
             <p>
                 {{

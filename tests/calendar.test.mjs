@@ -12,8 +12,9 @@ function component(name) {
     const { descriptor } = parse(readFileSync(new URL('../resources/js/' + name, import.meta.url), 'utf8'));
     const compiled = compileScript(descriptor, { id: name, inlineTemplate: true, genDefaultAs: 'component' });
     const modules = [];
+    const lucide = new Proxy({}, { get: (_target, exportName) => exportName === '__esModule' ? true : { name: exportName, setup: () => () => Vue.h('svg', { 'aria-hidden': 'true' }) } });
     const code = compiled.content.replace(/import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"];?/g, (_, bindings, source) => {
-        modules.push(source === 'vue' ? Vue : source === './workspace.js' ? Workspace : component(source.slice(2)));
+        modules.push(source === 'vue' ? Vue : source === '@lucide/vue' ? lucide : source === './workspace.js' ? Workspace : component(source.slice(2)));
         return `const ${bindings.replace(/\bas\b/g, ':')} = modules[${modules.length - 1}];`;
     });
     return new Function('modules', code + '\nreturn component;')(modules);

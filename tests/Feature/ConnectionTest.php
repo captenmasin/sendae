@@ -112,7 +112,8 @@ class ConnectionTest extends TestCase
         $this->getJson('/local/csrf')->assertOk();
         $this->getJson('/local/state')->assertUnauthorized()->assertDontSee('Private draft');
         $this->get('/local/media/'.Str::uuid())->assertUnauthorized();
-        foreach (['drafts', 'media', 'schedule', 'cancel', 'recover', 'sync', 'account', 'disconnect', 'analytics', 'connect'] as $action) {
+        $this->get('/local/workspaceImage/'.str_repeat('a', 64))->assertUnauthorized();
+        foreach (['drafts', 'media', 'schedule', 'cancel', 'recover', 'sync', 'account', 'disconnect', 'analytics', 'connect', 'profile', 'saveWorkspaceImage', 'deleteWorkspaceImage'] as $action) {
             $this->postJson('/local/'.$action, [])->assertUnauthorized();
         }
         $this->assertDatabaseHas('drafts', ['id' => $draft->id, 'title' => 'Private draft']);

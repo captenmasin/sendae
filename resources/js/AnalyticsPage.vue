@@ -1,5 +1,6 @@
 <script setup>
 import AccountLogo from './AccountLogo.vue';
+import Icon from './Icon.vue';
 import { useWorkspace } from './workspace.js';
 
 const { accountFor, busy, date, postTitle, refreshMetrics, state } = useWorkspace();
@@ -53,7 +54,7 @@ const { accountFor, busy, date, postTitle, refreshMetrics, state } = useWorkspac
             </small>
         </article>
         <div v-if="!state.publications.some((p) => p.status === 'published')" class="empty">
-            <div class="empty-art">▥</div>
+            <div class="empty-art"><Icon name="ChartColumn" :size="36" /></div>
             <h2>No analytics yet</h2>
             <p>Publish a post to see its metrics.</p>
         </div>

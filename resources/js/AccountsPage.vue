@@ -1,5 +1,6 @@
 <script setup>
 import AccountLogo from './AccountLogo.vue';
+import Icon from './Icon.vue';
 import { useWorkspace } from './workspace.js';
 
 const {
@@ -19,7 +20,10 @@ const {
 <template>
     <div class="page-heading">
         <div><h1>Accounts</h1></div>
-        <button class="outline" @click="sync()" :disabled="syncing || busy">Refresh</button>
+        <button class="outline" @click="sync()" :disabled="syncing || busy">
+            <Icon name="RefreshCw" :size="14" />
+            Refresh
+        </button>
     </div>
     <section class="content-section">
         <div class="account-grid">
@@ -34,7 +38,7 @@ const {
                         :disabled="busy || syncing"
                         :aria-label="'Connect ' + label"
                     >
-                        ＋ Connect
+                        <Icon name="Plus" :size="12" /> Connect
                     </button>
                     <span v-else class="tag">{{ providerStatus(key) }}</span>
                 </div>
@@ -53,6 +57,10 @@ const {
                             <div class="account-details">
                                 <h3>
                                     {{ key === 'threads' && !a.name.startsWith('@') ? '@' : '' }}{{ a.name }}
+                                    <span v-if="a.verified" class="verified-badge" title="Verified">
+                                        <Icon name="BadgeCheck" :size="14" />
+                                        <span class="visually-hidden">Verified</span>
+                                    </span>
                                 </h3>
                             </div>
                             <button
@@ -62,19 +70,7 @@ const {
                                 :aria-label="'Disconnect ' + a.name"
                                 :title="'Disconnect ' + a.name"
                             >
-                                <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="1.5"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    aria-hidden="true"
-                                >
-                                    <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
-                                </svg>
+                                <Icon name="Trash" :size="16" />
                             </button>
                         </div>
                         <div class="account-actions">

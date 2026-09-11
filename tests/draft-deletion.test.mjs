@@ -40,7 +40,7 @@ function deletionContext({fail,confirmed=true,saveFails=false,editorId='first'}=
  const calls=[],prompts=[];
  const context={
   busy:Vue.ref(false),syncing:Vue.ref(false),notice:Vue.ref(''),error:Vue.ref(''),
-  editor:Vue.ref({id:editorId}),pending:Vue.ref(true),
+  editor:Vue.ref({id:editorId}),pending:Vue.ref(true),workingItems:Vue.ref(null),
   state:Vue.ref({drafts:['first','second','third'].map(id=>({id})),publications:[{draft_id:'first',status:'scheduled'}]}),
   selectedDraftIds:Vue.ref(['first','second']),
   confirm:message=>{prompts.push(message);return confirmed;},
@@ -72,16 +72,16 @@ test('Backspace confirms selected post deletion and leaves editing, dialogs and 
   const shouldConfirm=!Object.keys(options).some(key=>!['single','confirmed'].includes(key));
   assert.equal(result.prompts.length,shouldConfirm?1:0,JSON.stringify(options));
   if(shouldConfirm)assert.match(result.prompts[0],options.single?/Delete this post\?/:/Delete 2 selected posts\?/);
-  assert.deepEqual(result.calls,options.confirmed?['save','first','second']:[],JSON.stringify(options));
+  assert.deepEqual(result.calls,options.confirmed?['first','second']:[],JSON.stringify(options));
   assert.equal(result.state.value.drafts.length,options.confirmed?1:3);
  }
 });
 
-test('bulk deletion saves once, deletes only selected posts, and closes a deleted composer',async()=>{
+test('bulk deletion deletes only selected posts and closes a deleted composer without saving it',async()=>{
  const result=deletionContext();
  await result.deleteDrafts(result.selectedDraftIds.value);
 
- assert.deepEqual(result.calls,['save','first','second']);
+ assert.deepEqual(result.calls,['first','second']);
  assert.equal(result.prompts.length,1);
  assert.match(result.prompts[0],/Delete 2 selected posts/);
  assert.match(result.prompts[0],/Queued and published posts will stay unchanged/);
@@ -92,12 +92,21 @@ test('bulk deletion saves once, deletes only selected posts, and closes a delete
  assert.equal(result.notice.value,'2 posts deleted.');
 });
 
+test('bulk deletion of other posts saves the open editor first',async()=>{
+ const result=deletionContext({editorId:'third'});
+ await result.deleteDrafts(result.selectedDraftIds.value);
+
+ assert.deepEqual(result.calls,['save','first','second']);
+ assert.equal(result.editor.value.id,'third');
+ assert.deepEqual(result.state.value.drafts.map(d=>d.id),['third']);
+});
+
 test('partial failure removes confirmed deletions and retains remaining selections for retry',async()=>{
  const result=deletionContext({fail:'second',editorId:'second'});
  result.selectedDraftIds.value.push('third');
  await result.deleteDrafts(result.selectedDraftIds.value);
 
- assert.deepEqual(result.calls,['save','first','second']);
+ assert.deepEqual(result.calls,['first','second']);
  assert.deepEqual(result.state.value.drafts.map(d=>d.id),['second','third']);
  assert.deepEqual([...result.selectedDraftIds.value],['second','third']);
  assert.equal(result.editor.value.id,'second');
@@ -105,24 +114,34 @@ test('partial failure removes confirmed deletions and retains remaining selectio
  assert.equal(result.error.value,'Deletion failed');
 });
 
-test('cancellation, save failure, empty selection and ongoing work never delete posts',async()=>{
- for(const options of [{confirmed:false},{saveFails:true},{busy:true},{syncing:true},{empty:true}]) {
+test('cancellation, save failure of another post, empty selection and ongoing work never delete posts',async()=>{
+ for(const options of [{confirmed:false},{saveFails:true,editorId:'third'},{busy:true},{syncing:true},{empty:true}]) {
   const result=deletionContext(options);
   result.busy.value=!!options.busy;result.syncing.value=!!options.syncing;
   await result.deleteDrafts(options.empty?[]:result.selectedDraftIds.value);
 
-  assert.deepEqual(result.calls,options.saveFails?['save']:[]);
+  assert.deepEqual(result.calls,options.saveFails?['save']:[],JSON.stringify(options));
   assert.equal(result.state.value.drafts.length,3);
-  assert.equal(result.editor.value.id,'first');
+  assert.equal(result.editor.value.id,options.editorId||'first');
   assert.equal(result.selectedDraftIds.value.length,2);
  }
+});
+
+test('deleting the open editor discards a failed save and still removes the posts',async()=>{
+ const result=deletionContext({saveFails:true});
+ await result.deleteDrafts(result.selectedDraftIds.value);
+
+ assert.deepEqual(result.calls,['first','second']);
+ assert.deepEqual(result.state.value.drafts.map(d=>d.id),['third']);
+ assert.equal(result.editor.value,null);
+ assert.equal(result.notice.value,'2 posts deleted.');
 });
 
 test('single deletion uses the same flow and preserves an unrelated selection',async()=>{
  const result=deletionContext();
  await result.deleteDraft();
 
- assert.deepEqual(result.calls,['save','first']);
+ assert.deepEqual(result.calls,['first']);
  assert.deepEqual([...result.selectedDraftIds.value],['second']);
  assert.equal(result.notice.value,'Post deleted.');
  assert.match(result.prompts[0],/^Delete this post\?/);

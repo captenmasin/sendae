@@ -7,13 +7,14 @@ import AppDialogs from './AppDialogs.vue';
 import AuthScreen from './AuthScreen.vue';
 import PostsPage from './PostsPage.vue';
 import PublicationsPage from './PublicationsPage.vue';
+import ActivityPage from './ActivityPage.vue';
 import AccountsPage from './AccountsPage.vue';
 import AnalyticsPage from './AnalyticsPage.vue';
 import SettingsPage from './SettingsPage.vue';
 
 const workspace = createWorkspace();
 provide(workspaceKey, workspace);
-const { authenticated, currentWorkspace, page, error, notice, loaded } = workspace;
+const { authenticated, colorScheme, currentWorkspace, gravatarUrl, page, error, notice, loaded } = workspace;
 watch(notice, (message) => {
     if (!message || !authenticated.value) return;
     toast.success(message);
@@ -23,12 +24,13 @@ watch(error, (message) => {
     if (message && authenticated.value) toast.error(message);
 });
 const pages = {
-    Posts: { component: PostsPage, icon: '▤' },
-    Queue: { component: PublicationsPage, icon: '◷' },
-    Published: { component: PublicationsPage, icon: '↗' },
-    Analytics: { component: AnalyticsPage, icon: '▥' },
-    Accounts: { component: AccountsPage, icon: '◎' },
-    Settings: { component: SettingsPage, icon: '⚙' },
+    Posts: { component: PostsPage, icon: 'Inbox' },
+    Queue: { component: PublicationsPage, icon: 'Clock' },
+    Published: { component: PublicationsPage, icon: 'ArrowUpRight' },
+    Activity: { component: ActivityPage, icon: 'Activity' },
+    Analytics: { component: AnalyticsPage, icon: 'ChartColumn' },
+    Accounts: { component: AccountsPage, icon: 'AtSign' },
+    Settings: { component: SettingsPage, icon: 'Settings' },
 };
 try {
     const savedPage = window.sessionStorage.getItem('sendae.page');
@@ -56,12 +58,15 @@ watch(page, (value) => {
                     <span>/</span>
                     <strong>{{ page }}</strong>
                 </div>
-                <span class="owner-avatar">You</span>
+                <span class="owner-avatar">
+                    <img v-if="gravatarUrl" :src="gravatarUrl" alt="" />
+                    <span v-else>You</span>
+                </span>
             </header>
             <div v-if="!loaded" class="empty"><p>Opening your workspace…</p></div>
             <component v-else :is="pages[page].component" />
         </main>
     </div>
     <AppDialogs />
-    <Toaster v-if="authenticated" position="bottom-right" theme="light" :duration="5000" close-button />
+    <Toaster v-if="authenticated" position="bottom-right" :theme="colorScheme" :duration="5000" close-button />
 </template>

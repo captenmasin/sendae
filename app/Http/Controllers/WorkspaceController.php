@@ -9,6 +9,7 @@ use App\Services\Workspace;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Native\Desktop\Facades\Shell;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class WorkspaceController extends Controller
 {
@@ -23,7 +24,7 @@ class WorkspaceController extends Controller
 
     public function saveWorkspace(Request $request, Synchronizer $sync): array
     {
-        return $sync->saveWorkspace($request->validate(['id' => 'nullable|string|size:64', 'name' => 'required|string|max:100', 'icon' => 'required|string|max:32']));
+        return $sync->saveWorkspace($request->validate(['id' => 'nullable|string|size:64', 'name' => 'required|string|max:100', 'icon' => 'nullable|string|max:32']));
     }
 
     public function switchWorkspace(Request $request, Synchronizer $sync): array
@@ -165,5 +166,35 @@ class WorkspaceController extends Controller
     public function connect(Request $r, Synchronizer $s): array
     {
         return $s->startConnection($r->validate(['provider' => 'required|string|in:x,threads,facebook,linkedin,linkedin_page'])['provider']);
+    }
+
+    public function profile(Request $request, Synchronizer $sync): array
+    {
+        return $sync->updateProfile($request->validate([
+            'name' => 'required|string|max:100',
+            'email' => 'required|email|max:255',
+            'password' => 'nullable|string|min:8|max:128|confirmed',
+            'password_confirmation' => 'nullable|string|max:128',
+            'current_password' => 'nullable|string|max:1000',
+        ]));
+    }
+
+    public function saveWorkspaceImage(Request $request, Synchronizer $sync): array
+    {
+        $data = $request->validate(['id' => 'required|string|size:64', 'file' => 'required|file|mimetypes:image/jpeg,image/png,image/webp|max:2048']);
+
+        return $sync->saveWorkspaceImage($data['id'], $data['file']);
+    }
+
+    public function deleteWorkspaceImage(Request $request, Synchronizer $sync): array
+    {
+        return $sync->deleteWorkspaceImage($request->validate(['id' => 'required|string|size:64'])['id']);
+    }
+
+    public function workspaceImage(string $id, Synchronizer $sync): BinaryFileResponse
+    {
+        abort_unless(strlen($id) === 64 && ctype_xdigit($id), 404);
+
+        return $sync->workspaceImage($id);
     }
 }

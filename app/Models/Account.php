@@ -15,6 +15,6 @@ class Account extends Model
 
     protected function casts(): array
     {
-        return ['slots' => 'array', 'credentials' => 'encrypted:array'];
+        return ['slots' => 'array', 'credentials' => 'encrypted:array', 'verified' => 'boolean'];
     }
 }

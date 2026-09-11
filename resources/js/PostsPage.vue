@@ -1,5 +1,6 @@
 <script setup>
 import AccountLogo from './AccountLogo.vue';
+import Icon from './Icon.vue';
 import PostComposer from './PostComposer.vue';
 import { useWorkspace } from './workspace.js';
 
@@ -32,9 +33,7 @@ const {
                 <h1>Posts</h1>
                 <span class="posts-count">{{ state.drafts.length }}</span>
                 <button class="compose-button" @click="newDraft" :disabled="busy" aria-label="New post" title="New post (⌘ N)">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7M16 3a2.1 2.1 0 0 1 3 3l-9 9-4 1 1-4Z" />
-                    </svg>
+                    <Icon name="Pencil" :size="18" />
                 </button>
             </div>
             <div v-if="state.drafts.length" class="posts-search">
@@ -112,7 +111,7 @@ const {
                 <div v-else class="empty posts-detail-empty">
                     <h2>{{ state.drafts.length ? 'Select a post' : 'Create your first post' }}</h2>
                     <p>{{ state.drafts.length ? 'Choose a post to edit, or start a new one.' : 'Write a draft, choose your accounts, and schedule it.' }}</p>
-                    <button class="primary" @click="newDraft" :disabled="busy">＋ New post</button>
+                    <button class="primary" @click="newDraft" :disabled="busy"><Icon name="Plus" :size="14" /> New post</button>
                 </div>
             </template>
         </section>
