@@ -1,4 +1,6 @@
 <script setup>
+import { computed } from 'vue';
+import AccountLogo from './AccountLogo.vue';
 import { useWorkspace } from './workspace.js';
 
 const {
@@ -9,6 +11,7 @@ const {
     chosen,
     closeDraft,
     customize,
+    customTitle,
     deleteDraft,
     editor,
     items,
@@ -16,7 +19,7 @@ const {
     network,
     page,
     pending,
-    preview,
+    postTitle,
     publicationStatuses,
     removeMedia,
     removePost,
@@ -24,16 +27,19 @@ const {
     saving,
     scheduleOpen,
     state,
-    symbols,
     syncing,
     upload,
 } = useWorkspace();
+const postName = computed({
+    get: () => customTitle(editor.value),
+    set: (value) => { editor.value.title = value; },
+});
 </script>
 
 <template>
     <fieldset v-if="editor" class="composer" :disabled="busy">
         <div class="composer-top">
-            <span>{{ saving ? 'Saving…' : pending ? 'Unsaved changes' : '✓ Saved on this Mac' }}</span>
+            <span>{{ pending && !saving ? 'Unsaved changes' : '' }}</span>
             <button class="icon-button" @click="closeDraft" aria-label="Close composer">×</button>
         </div>
         <div v-if="publicationStatuses[editor.id]" class="draft-statuses draft-publications" role="status">
@@ -47,14 +53,18 @@ const {
                 {{ status.charAt(0).toUpperCase() + status.slice(1) }} · {{ count }}
             </span>
         </div>
+        <label for="post-name" class="post-name-label">Title</label>
         <input
+            id="post-name"
             class="title-input"
             aria-label="Post title"
-            v-model="editor.title"
+            v-model="postName"
             @input="changed"
             maxlength="200"
-            placeholder="Post title"
+            :placeholder="postTitle({ content: editor.content })"
+            title="Leave blank to use the opening words of your post. This name is not published."
         />
+        <div class="destinations-heading">Publish to</div>
         <div class="destinations">
             <label
                 v-for="a in state.accounts.filter((a) => a.status === 'connected')"
@@ -63,7 +73,7 @@ const {
                 :class="{ checked: editor.content.account_ids.includes(a.id) }"
             >
                 <input type="checkbox" :value="a.id" v-model="editor.content.account_ids" @change="changed" />
-                <span class="network-icon">{{ symbols[a.provider] }}</span>
+                <AccountLogo :provider="a.provider" :size="14" />
                 {{ a.name }}
             </label>
             <button
@@ -84,7 +94,7 @@ const {
                 :class="{ active: network === key }"
                 @click="customize(key)"
             >
-                {{ names[key] }}
+                <AccountLogo :provider="key" :size="14" /> {{ names[key] }}
                 <i v-if="editor.content.overrides[key]">•</i>
             </button>
         </div>
@@ -144,18 +154,6 @@ const {
         >
             ＋ Add to thread
         </button>
-        <details class="preview">
-            <summary>Preview</summary>
-            <article v-for="(item, i) in preview" :key="i">
-                <strong>{{ chosen[0]?.name || 'Your account' }}</strong>
-                <p>{{ item.text || 'Your post will appear here.' }}</p>
-                <small v-if="item.media_ids.length">{{ item.media_ids.length }} attachment(s)</small>
-            </article>
-            <small>
-                Network rendering may vary. LinkedIn and Facebook combine shared threads; select their tab to
-                edit.
-            </small>
-        </details>
         <footer class="composer-footer">
             <button class="text-button" @click="deleteDraft" :disabled="busy || saving || syncing">
                 Delete post
@@ -167,3 +165,7 @@ const {
         </footer>
     </fieldset>
 </template>
+
+<style scoped>
+.post-name-label { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+</style>

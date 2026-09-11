@@ -1,4 +1,5 @@
 <script setup>
+import AccountLogo from './AccountLogo.vue';
 import { useWorkspace } from './workspace.js';
 
 const vModal = { mounted: (el) => el.showModal(), beforeUnmount: (el) => el.close() };
@@ -7,10 +8,12 @@ const {
     authenticated,
     authorizationForm,
     busy,
+    canReschedule,
     chosen,
     connectionForm,
     decideAuthorization,
     error,
+    postTitle,
     recover,
     recovery,
     recoveryAction,
@@ -97,18 +100,19 @@ const {
             v-modal
             class="modal-backdrop"
             aria-labelledby="recovery-title"
-            @cancel.prevent="recovery = null"
-            @click.self="recovery = null"
+            @cancel.prevent="!busy && (recovery = null)"
+            @click.self="!busy && (recovery = null)"
         >
             <section class="modal" aria-labelledby="recovery-title">
-                <button class="modal-close" @click="recovery = null" aria-label="Close recovery">×</button>
-                <h2 id="recovery-title">Recover this publication</h2>
-                <p>
-                    {{ recovery.snapshot.title }} · {{ recovery.receipts?.length || 0 }} confirmed item(s)
+                <button class="modal-close" @click="recovery = null" aria-label="Close publication editor" :disabled="busy">×</button>
+                <h2 id="recovery-title">{{ canReschedule(recovery) ? 'Change date & time' : 'Recover this publication' }}</h2>
+                <p v-if="canReschedule(recovery)">{{ postTitle(recovery) }}</p>
+                <p v-else>
+                    {{ postTitle(recovery) }} · {{ recovery.receipts?.length || 0 }} confirmed item(s)
                     will be retained.
                 </p>
                 <form @submit.prevent="recover">
-                    <label>
+                    <label v-if="!canReschedule(recovery)">
                         Recovery action
                         <select v-model="recoveryAction">
                             <template v-if="recovery.status === 'uncertain'">
@@ -124,15 +128,17 @@ const {
                     </label>
                     <label v-else>
                         New date & time
-                        <input v-model="recoveryAt" type="datetime-local" required />
+                        <input v-model="recoveryAt" type="datetime-local" required :disabled="busy || syncing" />
                     </label>
-                    <p class="muted">
+                    <p v-if="canReschedule(recovery)" class="muted">Times in {{ Intl.DateTimeFormat().resolvedOptions().timeZone }}</p>
+                    <p v-else class="muted">
                         Check the actual provider before resolving an uncertain outcome. Rescheduling an
                         already published item can create a duplicate.
                     </p>
-                    <button class="primary" :disabled="busy">
+                    <p v-if="error" role="alert">{{ error }}</p>
+                    <button class="primary" :disabled="busy || syncing">
                         {{
-                            recoveryAction === 'confirmed'
+                            busy ? 'Saving…' : canReschedule(recovery) ? 'Save changes' : recoveryAction === 'confirmed'
                                 ? 'Verify & record post'
                                 : 'Reschedule unfinished work'
                         }}
@@ -313,6 +319,7 @@ const {
                     class="destination"
                 >
                     <input type="checkbox" v-model="connectionForm.selected" :value="index" />
+                    <AccountLogo :account="account" :provider="connectionForm.provider" />
                     {{ account.name }}
                 </label>
                 <label>

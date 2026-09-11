@@ -53,7 +53,7 @@ const {
                 ＋
             </button>
         </div>
-        <button class="primary new-draft" @click="newDraft">
+        <button class="primary new-draft" @click="newDraft" :disabled="busy">
             ＋
             <span>New post</span>
             <kbd>⌘ N</kbd>

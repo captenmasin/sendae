@@ -1,4 +1,5 @@
 <script setup>
+import AccountLogo from './AccountLogo.vue';
 import { useWorkspace } from './workspace.js';
 
 const {
@@ -10,7 +11,6 @@ const {
     names,
     providerStatus,
     state,
-    symbols,
     sync,
     syncing,
 } = useWorkspace();
@@ -25,7 +25,7 @@ const {
         <div class="account-grid">
             <article v-for="(label, key) in names" :key="key" class="account-card">
                 <div class="account-card-heading">
-                    <span class="network-icon">{{ symbols[key] }}</span>
+                    <AccountLogo :provider="key" />
                     <h2>{{ label }}</h2>
                     <button
                         v-if="canConnect(key)"
@@ -49,16 +49,7 @@ const {
                         :key="a.id"
                     >
                         <div class="account-identity">
-                            <div class="account-avatar" aria-hidden="true">
-                                <img
-                                    v-if="a.avatar_url"
-                                    :src="a.avatar_url"
-                                    alt=""
-                                    referrerpolicy="no-referrer"
-                                    @error="a.avatar_url = null"
-                                />
-                                <span v-else>{{ a.name.replace(/^@/, '').slice(0, 1).toUpperCase() }}</span>
-                            </div>
+                            <AccountLogo :account="a" :size="28" />
                             <div class="account-details">
                                 <h3>
                                     {{ key === 'threads' && !a.name.startsWith('@') ? '@' : '' }}{{ a.name }}

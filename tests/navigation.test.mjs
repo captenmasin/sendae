@@ -135,6 +135,7 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
         assert.equal(app.workspace.page.value, page);
         assert.match(html, new RegExp('<h1>' + page + '</h1>'));
         assert.equal(app.workspace.editor.value, originalEditor);
+        assert.ok(findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes('New post')), 'New post remains visible on ' + page);
         const active = findNode(app.nodes.get('AppSidebar.vue'), node => node?.props?.['aria-current'] === 'page');
         assert.ok(textContent(active).includes(page));
         if (page === 'Queue') { assert.match(html, /Queued post/); assert.doesNotMatch(html, /Published post/); }
@@ -162,6 +163,19 @@ test('authentication screens hide the workspace while password reset remains acc
 
     app.workspace.resetForm.value = { email: 'person@example.com', token: 'ticket', password: '', password_confirmation: '' };
     assert.match(await app.render(), /Choose a new password/);
+});
+
+test('composer header stays quiet throughout successful autosave', async () => {
+    const app = application({ authenticated: true, loaded: true, editor: { id: 'draft', title: 'Post', content: { items: [{ text: 'Typing', media_ids: [] }], overrides: {}, account_ids: [] } } });
+    await app.render();
+
+    for (const [saving, pending] of [[false, false], [true, false], [true, true], [false, false]]) {
+        app.workspace.saving.value = saving;
+        app.workspace.pending.value = pending;
+        await app.render();
+        const header = findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.class === 'composer-top');
+        assert.equal(textContent(header).trim(), '×');
+    }
 });
 
 test('composer edits use shared autosave and failed saves keep the composer open for retry', async t => {
@@ -243,4 +257,221 @@ test('connecting accounts refreshes the Accounts page immediately and reports co
             assert.equal(app.workspace.error.value, '');
         }
     }
+});
+
+test('inbox rows support Command toggles, Shift ranges, additive ranges and returning to one editor', async () => {
+    const drafts = ['a', 'b', 'c', 'd'].map(id => ({ id, title: 'Post ' + id, content: { items: [{ text: id, media_ids: [] }], overrides: {}, account_ids: [] } }));
+    const app = application({ authenticated: true, loaded: true, state: { drafts, accounts: [], publications: [], media: [], settings: {} } });
+    async function click(id, event = {}) {
+        await app.render();
+        const row = findNode(app.nodes.get('PostsPage.vue'), node => node?.type === 'button' && node.props?.['aria-describedby'] === 'post-selection-help' && textContent(node).includes('Post ' + id));
+        await row.props.onClick(event);
+    }
+    await click('a');
+    await click('c', { metaKey: true });
+    assert.deepEqual(app.workspace.selectedDraftIds.value, ['a', 'c']);
+    assert.match(await app.render(), /2 posts selected/);
+    assert.doesNotMatch(await app.render(), /aria-label="Post title"/);
+
+    await click('d', { shiftKey: true });
+    assert.deepEqual(app.workspace.selectedDraftIds.value, ['c', 'd']);
+    await click('a', { shiftKey: true });
+    assert.deepEqual(app.workspace.selectedDraftIds.value, ['a', 'b', 'c']);
+    await click('d', { metaKey: true, shiftKey: true });
+    assert.deepEqual([...app.workspace.selectedDraftIds.value].sort(), ['a', 'b', 'c', 'd']);
+    await click('b', { ctrlKey: true });
+    assert.deepEqual(app.workspace.selectedDraftIds.value, ['a', 'c', 'd']);
+
+    await click('b');
+    assert.deepEqual(app.workspace.selectedDraftIds.value, ['b']);
+    assert.equal(app.workspace.editor.value.id, 'b');
+    assert.match(await app.render(), /aria-label="Post title"/);
+    await click('b', { metaKey: true });
+    assert.deepEqual(app.workspace.selectedDraftIds.value, []);
+    assert.equal(app.workspace.editor.value, null);
+    assert.match(await app.render(), />Select a post</);
+});
+
+test('inbox range selection follows filtered rows, recovers missing anchors and supports select all', async () => {
+    const drafts = ['Keep A', 'Hidden B', 'Keep C', 'Hidden D'].map((title, id) => ({ id, title, content: { items: [{ text: '', media_ids: [] }], overrides: {}, account_ids: [] } }));
+    const app = application({ authenticated: true, loaded: true, state: { drafts, accounts: [], publications: [], media: [], settings: {} } });
+    await app.render();
+    const workspace = app.workspace;
+    await workspace.selectDraft(drafts[1]);
+    workspace.search.value = 'Keep';
+    await Vue.nextTick();
+    await workspace.selectDraft(drafts[2], { shiftKey: true });
+    assert.deepEqual(workspace.selectedDraftIds.value, [2]);
+
+    await workspace.selectDraft(drafts[0]);
+    await workspace.selectDraft(drafts[2], { shiftKey: true });
+    assert.deepEqual(workspace.selectedDraftIds.value, [0, 2]);
+    await workspace.selectAllDrafts({ target: { checked: false } });
+    assert.equal(workspace.editor.value, null);
+    assert.deepEqual(workspace.selectedDraftIds.value, []);
+    await workspace.selectAllDrafts({ target: { checked: true } });
+    assert.deepEqual(workspace.selectedDraftIds.value, [0, 2]);
+    assert.equal(workspace.allDraftsSelected.value, true);
+
+    workspace.search.value = 'Keep C';
+    await Vue.nextTick();
+    await workspace.selectAllDrafts({ target: { checked: true } });
+    assert.equal(workspace.editor.value.id, 2);
+    assert.deepEqual(workspace.selectedDraftIds.value, [2]);
+    workspace.page.value = 'Queue';
+    workspace.page.value = 'Posts';
+    workspace.search.value = '';
+    await Vue.nextTick();
+    await workspace.selectDraft(drafts[3], { metaKey: true });
+    assert.deepEqual(workspace.selectedDraftIds.value, [2, 3]);
+});
+
+test('failed saves keep the current draft and selection; reopening the same draft preserves pending content', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    let fail = true;
+    t.mock.method(globalThis, 'fetch', async (url, options) => ({
+        ok: !fail, status: fail ? 500 : 200,
+        json: async () => fail ? { message: 'Save failed' } : { draft: { ...JSON.parse(options.body), version: 2 } },
+    }));
+    const drafts = ['a', 'b'].map(id => ({ id, title: id, version: 1, content: { items: [{ text: '', media_ids: [] }], overrides: {}, account_ids: [] } }));
+    const app = application({ authenticated: true, loaded: true, state: { drafts, accounts: [], publications: [], media: [], settings: {} } });
+    await app.render();
+    const workspace = app.workspace;
+    await workspace.selectDraft(drafts[0]);
+    workspace.editor.value.title = 'Unsaved title';
+    workspace.pending.value = true;
+
+    await workspace.selectDraft(drafts[1]);
+    assert.deepEqual(workspace.selectedDraftIds.value, ['a']);
+    assert.equal(workspace.editor.value.title, 'Unsaved title');
+    assert.equal(workspace.pending.value, true);
+    await workspace.selectDraft(drafts[0], { metaKey: true });
+    assert.deepEqual(workspace.selectedDraftIds.value, ['a']);
+    assert.equal(workspace.editor.value.title, 'Unsaved title');
+    assert.equal(workspace.error.value, 'Save failed');
+
+    fail = false;
+    await workspace.selectDraft(drafts[0]);
+    assert.equal(workspace.editor.value.title, 'Unsaved title');
+    assert.equal(workspace.editor.value.version, 2);
+    assert.equal(workspace.state.value.drafts[0].title, 'Unsaved title');
+    assert.equal(workspace.pending.value, false);
+    await workspace.selectDraft(drafts[1]);
+    assert.equal(workspace.editor.value.id, 'b');
+});
+
+test('selection cannot change during ongoing work or target a hidden post', async () => {
+    const drafts = ['a', 'b'].map(id => ({ id, title: id, content: { items: [{ text: '', media_ids: [] }], overrides: {}, account_ids: [] } }));
+    const app = application({ authenticated: true, loaded: true, state: { drafts, accounts: [], publications: [], media: [], settings: {} } });
+    await app.render();
+    const workspace = app.workspace;
+    await workspace.selectDraft(drafts[0]);
+    for (const flag of ['busy', 'syncing']) {
+        workspace[flag].value = true;
+        await workspace.selectDraft(drafts[1], { metaKey: true });
+        await workspace.selectAllDrafts({ target: { checked: true } });
+        await workspace.closeDraft();
+        assert.deepEqual(workspace.selectedDraftIds.value, ['a']);
+        assert.equal(workspace.editor.value.id, 'a');
+        workspace[flag].value = false;
+    }
+    workspace.search.value = 'a';
+    await Vue.nextTick();
+    await workspace.selectDraft(drafts[1], { shiftKey: true });
+    assert.deepEqual(workspace.selectedDraftIds.value, ['a']);
+});
+
+test('connected account images appear across posts, publications, analytics and account selection', async () => {
+    const account = { id: 'account', provider: 'threads', name: 'My profile', status: 'connected', avatar_url: 'https://images.example/account.jpg' };
+    const draft = { id: 'draft', title: 'Post', content: { items: [{ text: 'Hello', media_ids: [] }], overrides: {}, account_ids: [account.id] } };
+    const app = application({ authenticated: true, loaded: true, editor: structuredClone(draft), state: {
+        drafts: [draft], accounts: [account], media: [], settings: { providers: {} },
+        publications: ['scheduled', 'published'].map(status => ({ id: status, account_id: account.id, draft_id: draft.id, status, snapshot: { title: 'Post' }, metrics_status: 'available' })),
+    } });
+    for (const page of ['Posts', 'Queue', 'Published', 'Analytics', 'Accounts']) {
+        await app.render();
+        app.workspace.page.value = page;
+        const html = await app.render();
+        assert.equal((html.match(/src="https:\/\/images.example\/account.jpg"/g) || []).length, 1, page);
+        if (page === 'Posts') {
+            const destination = html.match(/<label class="destination[^]*?<\/label>/)?.[0];
+            assert.ok(destination);
+            assert.match(destination, /aria-label="Threads"><svg/);
+            assert.doesNotMatch(destination, /<img/);
+        }
+    }
+    app.workspace.page.value = 'Settings';
+    app.workspace.connectionForm.value = { accounts: [account], selected: [0], timezone: 'Europe/London' };
+    assert.match(await app.render(), /src="https:\/\/images.example\/account.jpg"/);
+});
+
+test('legacy timestamp titles become previews across drafts, calendars, publication dialogs and analytics', async () => {
+    const draft = { id: 'draft', title: '10 Sept, 11:20', updated_at: '2026-09-11T09:00:00Z', content: { items: [{ text: 'Our next launch is coming\nMore details soon.', media_ids: [] }], overrides: {}, account_ids: [] } };
+    const queued = { id: 'queued', draft_id: draft.id, status: 'scheduled', metrics_status: 'not_refreshed', scheduled_at: '2026-09-18T10:33:00Z', snapshot: { title: draft.title, items: [{ text: 'The original scheduled announcement', media_ids: [] }] } };
+    const app = application({ authenticated: true, loaded: true, editor: structuredClone(draft), state: {
+        drafts: [draft], accounts: [], media: [], settings: { providers: {} },
+        publications: [queued, { ...queued, id: 'published', status: 'published', published_at: '2026-09-10T10:33:00Z', snapshot: { title: draft.title, items: [{ text: 'The original published announcement', media_ids: [] }] } }],
+    } });
+
+    let html = await app.render();
+    assert.match(html, /<h3>Our next launch is coming<\/h3>/);
+    assert.doesNotMatch(html, /10 Sept, 11:20/);
+    assert.match(html, /<label[^>]*for="post-name"[^>]*>Title<\/label>/);
+    assert.match(html, /placeholder="Our next launch is coming"/);
+    assert.equal(app.workspace.state.value.drafts[0].title, draft.title, 'Displaying a preview does not rewrite stored names');
+    app.workspace.search.value = 'launch';
+    assert.equal(app.workspace.drafts.value.length, 1);
+
+    for (const page of ['Queue', 'Published', 'Analytics']) {
+        app.workspace.page.value = page;
+        html = await app.render();
+        assert.match(html, page === 'Queue' ? /The original scheduled announcement/ : /The original published announcement/);
+        assert.doesNotMatch(html, /Our next launch|10 Sept, 11:20/);
+        assert.match(html, page === 'Analytics' ? /Published:/ : /Scheduled:/);
+    }
+    app.workspace.page.value = 'Queue';
+    app.workspace.openRecovery(queued);
+    html = await app.render();
+    assert.match(html, /<p>The original scheduled announcement<\/p>/);
+    assert.doesNotMatch(html, /10 Sept, 11:20/);
+
+    app.workspace.recovery.value = null;
+    app.workspace.page.value = 'Posts';
+    await app.render();
+    let name = findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.['aria-label'] === 'Post title');
+    name.props['onUpdate:modelValue']('September launch');
+    assert.match(await app.render(), /value="September launch"/);
+    assert.equal(app.workspace.editor.value.title, 'September launch');
+    name = findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.['aria-label'] === 'Post title');
+    name.props['onUpdate:modelValue']('');
+    app.workspace.editor.value.content.items[0].text = 'A revised opening line';
+    assert.match(await app.render(), /placeholder="A revised opening line"/);
+    assert.equal(app.workspace.editor.value.title, '');
+});
+
+test('automatic names cover empty, media and network-specific posts while preserving custom names and conflicts', async () => {
+    const app = application({ authenticated: true, loaded: true, state: {
+        drafts: [], publications: [], accounts: [], settings: { providers: {} },
+        media: [{ id: 'photo', mime: 'image/jpeg' }, { id: 'video', mime: 'video/mp4' }],
+    } });
+    await app.render();
+    const { postTitle } = app.workspace;
+    const draft = (title = '', text = '', media_ids = []) => ({ title, content: { items: [{ text, media_ids }], overrides: {} } });
+
+    for (const title of ['', 'Untitled draft', '10 Sept, 11:20', 'Sep 10, 11:20 AM', '10 Sept, 11:20\u202fpm']) {
+        assert.equal(postTitle(draft(title, '  Opening words\nSecond line')), 'Opening words');
+    }
+    assert.equal(postTitle(draft()), 'New post');
+    assert.equal(postTitle(draft('', '', ['photo'])), 'Photo post');
+    assert.equal(postTitle(draft('', '', ['video'])), 'Video post');
+    assert.equal(postTitle(draft('', '', ['photo', 'video'])), 'Video post');
+    assert.equal(postTitle(draft('', '', ['missing'])), 'Media post');
+    assert.equal(postTitle(draft('September launch', 'Different opening')), 'September launch');
+    assert.equal(postTitle(draft('Meet at 11:20', 'Different opening')), 'Meet at 11:20');
+    assert.equal(postTitle(draft('10 Sept, 11:20 (conflict copy)', 'Preserved text')), 'Preserved text (conflict copy)');
+    assert.equal(postTitle(draft('Custom (conflict copy)', 'Different text')), 'Custom (conflict copy)');
+    assert.equal(postTitle({ title: '', content: { items: [{ text: '' }], overrides: { threads: [{ text: 'Network-only announcement' }] } } }), 'Network-only announcement');
+    assert.equal(postTitle(draft('', '😀'.repeat(61))), '😀'.repeat(60) + '…');
 });

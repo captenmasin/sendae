@@ -16,11 +16,11 @@ async function renderDraft(publications,{title='My draft',editorOpen=false,query
  const draft={id:'draft',title,content:{items:[{text:'Hello',media_ids:[]}],account_ids:[],overrides:{}}};
  const state=Vue.ref({drafts:posts||[draft],accounts:[],publications});
  const search=Vue.ref(query);
- const {publicationStatuses,drafts,draftSummary}=runInNewContext(source.slice(source.indexOf('const publicationStatuses ='),source.indexOf('const items ='))+';({publicationStatuses,drafts,draftSummary})',{computed:Vue.computed,state,search});
+ const {publicationStatuses,drafts,draftSummary,postTitle,customTitle}=runInNewContext(source.slice(source.indexOf('const publicationStatuses ='),source.indexOf('const items = computed('))+';({publicationStatuses,drafts,draftSummary,postTitle,customTitle})',{computed:Vue.computed,state,search});
  const app=()=>Vue.createSSRApp({render,setup:()=>({
-  state,publicationStatuses,drafts,draftSummary,search,editor:editorOpen?draft:null,
+  state,publicationStatuses,drafts,draftSummary,postTitle,customTitle,postName:customTitle(draft),search,editor:editorOpen?draft:null,
   date:()=>'',symbols:{},names:{},network:'shared',chosen:[],items:[],preview:[],
-  busy,saving:false,pending:false,newDraft:()=>{},openDraft:()=>{},closeDraft:()=>{},changed:()=>{},
+  busy,saving:false,pending:false,newDraft:()=>{},selectDraft:()=>{},closeDraft:()=>{},changed:()=>{},
   resetOverride:()=>{},addPost:()=>{},deleteDraft:()=>{},
   selectedDraftIds:selected,allDraftsSelected:drafts.value.length>0&&drafts.value.every(d=>selected.includes(d.id)),selectAllDrafts:()=>{},deleteDrafts:()=>{},syncing:false,
  })});
@@ -114,33 +114,34 @@ test('a scheduled post keeps its card and updates its badge after synchronizatio
  assert.doesNotMatch(html,/Scheduled · 1/);
 });
 
-test('creating a post uses the current date and time as its title and clears search that would hide it', async () => {
+test('creating a post leaves its optional name blank and clears search that would hide it', async () => {
  const context={
   authenticated:Vue.ref(true),busy:Vue.ref(false),editor:Vue.ref(null),network:Vue.ref('x'),
-  page:Vue.ref('Published'),search:Vue.ref('old post'),
+  page:Vue.ref('Published'),search:Vue.ref('old post'),selectedDraftIds:Vue.ref(['old']),selectionAnchor:'old',
   act:fn=>fn(),flush:async()=>{},changed:()=>{},crypto:{randomUUID:()=> 'new-post'},
-  Date:{now:()=>1788874200000},date:value=>{assert.equal(value,1788874200000);return '8 Sept, 14:30';},
  };
  await runInNewContext(source.slice(source.indexOf('async function newDraft()'),source.indexOf('const publicationStatuses ='))+';newDraft()',context);
 
  assert.equal(context.page.value,'Posts');
  assert.equal(context.search.value,'');
- assert.equal(context.editor.value.title,'8 Sept, 14:30');
+ assert.equal(context.editor.value.title,'');
+ assert.deepEqual([...context.selectedDraftIds.value],['new-post']);
+ assert.equal(context.selectionAnchor,'new-post');
 });
 
-test('posts render labelled selection checkboxes, selected counts and disabled deletion while busy', async () => {
+test('posts expose selectable rows and show bulk actions only for a selection', async () => {
  const empty=await renderDraft([]);
- assert.match(empty.html,/type="checkbox"[^>]*aria-label="Select post: My draft"/);
- assert.ok(empty.html.includes('>0 selected<'));
- assert.ok(empty.html.includes('<button class="outline" disabled>Delete selected</button>'));
+ assert.match(empty.html,/class="post-row" aria-pressed="false" aria-describedby="post-selection-help"/);
+ assert.doesNotMatch(empty.html,/Delete selected/);
+ assert.match(empty.html,/>Select a post</);
 
  const selected=await renderDraft([],{selected:['draft']});
  assert.ok(selected.html.includes('>1 selected<'));
  assert.ok(selected.html.includes('<input type="checkbox" checked'));
  assert.ok(selected.html.includes('<button class="outline">Delete selected</button>'));
- assert.ok(selected.html.includes('class="draft-card selected"'));
+ assert.ok(selected.html.includes('class="post-row selected" aria-pressed="true"'));
 
  const busy=await renderDraft([],{selected:['draft'],busy:true});
  assert.ok(busy.html.includes('<button class="outline" disabled>Please wait…</button>'));
- assert.ok(busy.html.includes('aria-label="Select post: My draft" disabled'));
+ assert.ok(busy.html.includes('aria-describedby="post-selection-help" disabled'));
 });

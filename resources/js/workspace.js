@@ -58,7 +58,6 @@ export function createWorkspace() {
         linkedin: 'LinkedIn',
         linkedin_page: 'LinkedIn Page',
     };
-    const symbols = { x: '𝕏', threads: '@', facebook: 'f', linkedin: 'in', linkedin_page: 'in' };
     const clone = (v) => JSON.parse(JSON.stringify(v));
     const date = (v) =>
         new Date(v).toLocaleString(undefined, {
@@ -184,17 +183,27 @@ export function createWorkspace() {
         return savePromise;
     }
     async function openDraft(draft) {
-        await act(async () => {
+        if (busy.value || syncing.value) return;
+        return act(async () => {
             await flush();
-            editor.value = clone(draft);
-            network.value = 'shared';
+            if (editor.value?.id !== draft.id) {
+                editor.value = clone(state.value.drafts.find((post) => post.id === draft.id) || draft);
+                network.value = 'shared';
+            }
             page.value = 'Posts';
+            selectedDraftIds.value = [editor.value.id];
+            selectionAnchor = editor.value.id;
+            return true;
         });
     }
     async function closeDraft() {
-        await act(async () => {
+        if (busy.value || syncing.value) return;
+        return act(async () => {
             await flush();
             editor.value = null;
+            selectedDraftIds.value = [];
+            selectionAnchor = null;
+            return true;
         });
     }
     async function deleteDraft() {
@@ -231,13 +240,15 @@ export function createWorkspace() {
             await flush();
             editor.value = {
                 id: crypto.randomUUID(),
-                title: date(Date.now()),
+                title: '',
                 version: 0,
                 content: { items: [{ text: '', media_ids: [] }], overrides: {}, account_ids: [] },
             };
             network.value = 'shared';
             page.value = 'Posts';
             search.value = '';
+            selectedDraftIds.value = [editor.value.id];
+            selectionAnchor = editor.value.id;
             changed();
         });
     }
@@ -263,9 +274,31 @@ export function createWorkspace() {
         const count = new Set(versions.flat().flatMap((item) => item.media_ids)).size;
         return count ? count + ' attachment' + (count === 1 ? '' : 's') : 'Empty post';
     }
+    function customTitle(post) {
+        const title = (post?.snapshot?.title ?? post?.title ?? '').trim();
+        const base = title.replace(/(?: \(conflict copy\))+$/, '').replace(/\s+/g, ' ');
+        // ponytail: legacy titles have no provenance; recognize the old English date formats without rewriting stored names.
+        const timestamp = /^(?=.*\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b)(?:\d{1,2} [A-Za-z]+|[A-Za-z]+ \d{1,2}),? (?:at )?\d{1,2}:\d{2}(?: ?[ap]m)?$/i;
+        return !base || ['Untitled draft', 'Untitled post', 'New post'].includes(base) || timestamp.test(base) ? '' : title;
+    }
+    function postTitle(post) {
+        const name = customTitle(post);
+        if (name) return name;
+        const content = post?.snapshot ?? post?.content ?? {};
+        const items = [...(content.items || []), ...Object.values(content.overrides || {}).flat()];
+        const text = items.map((item) => (item.text || '').trim()).find(Boolean)?.split(/\r?\n/)[0].replace(/\s+/g, ' ') || '';
+        const characters = Array.from(text);
+        const mediaIds = items.flatMap((item) => item.media_ids || []);
+        const media = mediaIds.map((id) => state.value.media?.find((item) => item.id === id));
+        const preview = text ? characters.slice(0, 60).join('') + (characters.length > 60 ? '…' : '')
+            : media.some((item) => item?.mime?.startsWith('video/')) ? 'Video post'
+            : media.length && media.every((item) => item?.mime?.startsWith('image/')) ? 'Photo post'
+            : media.length ? 'Media post' : 'New post';
+        return preview + ((post?.snapshot?.title ?? post?.title ?? '').match(/(?: \(conflict copy\))+$/)?.[0] || '');
+    }
     const drafts = computed(() =>
         state.value.drafts.filter((d) =>
-            (d.title + ' ' + d.content.items.map((i) => i.text).join(' '))
+            (postTitle(d) + ' ' + draftSummary(d.content))
                 .toLowerCase()
                 .includes(search.value.toLowerCase()),
         ),
@@ -302,18 +335,49 @@ export function createWorkspace() {
         state.value.publications.filter((p) => !['scheduled', 'retry', 'publishing'].includes(p.status)),
     );
     const selectedDraftIds = ref([]);
+    let selectionAnchor = null;
     const allDraftsSelected = computed(
         () => drafts.value.length > 0 && drafts.value.every((d) => selectedDraftIds.value.includes(d.id)),
     );
-    function selectAllDrafts(event) {
-        selectedDraftIds.value = event.target.checked ? drafts.value.map((d) => d.id) : [];
+    async function selectAllDrafts(event) {
+        if (busy.value || syncing.value) return;
+        if (!event.target.checked) return closeDraft();
+        if (drafts.value.length === 1) return selectDraft(drafts.value[0]);
+        selectedDraftIds.value = drafts.value.map((d) => d.id);
+        selectionAnchor = selectedDraftIds.value[0] || null;
+    }
+    async function selectDraft(draft, event = {}) {
+        if (busy.value || syncing.value) return;
+        const visibleIds = drafts.value.map((post) => post.id);
+        if (!visibleIds.includes(draft.id)) return;
+        const additive = event.metaKey || event.ctrlKey;
+        const currentSelection = selectedDraftIds.value.length ? selectedDraftIds.value
+            : visibleIds.includes(editor.value?.id) ? [editor.value.id] : [];
+        const previousAnchor = selectionAnchor || editor.value?.id;
+        const anchor = visibleIds.includes(previousAnchor) ? previousAnchor : draft.id;
+        let selected = [draft.id];
+        if (event.shiftKey) {
+            const start = visibleIds.indexOf(anchor), end = visibleIds.indexOf(draft.id);
+            const range = visibleIds.slice(Math.min(start, end), Math.max(start, end) + 1);
+            selected = additive ? [...new Set([...currentSelection, ...range])] : range;
+        } else if (additive) {
+            selected = currentSelection.includes(draft.id)
+                ? currentSelection.filter((id) => id !== draft.id)
+                : [...currentSelection, draft.id];
+        }
+        if (selected.length === 1 && !await openDraft(drafts.value.find((post) => post.id === selected[0]))) return;
+        if (!selected.length && !await closeDraft()) return;
+        selectedDraftIds.value = selected;
+        selectionAnchor = event.shiftKey ? anchor : draft.id;
     }
     watch(drafts, (visible) => {
         selectedDraftIds.value = selectedDraftIds.value.filter((id) => visible.some((d) => d.id === id));
+        if (!visible.some((draft) => draft.id === selectionAnchor)) selectionAnchor = null;
     });
     watch([page, authenticated, () => state.value.settings.workspace_id], () => {
         selectedDraftIds.value = [];
-    });
+        selectionAnchor = null;
+    }, { flush: 'sync' });
     function customize(key) {
         network.value = key;
         if (key !== 'shared' && !editor.value.content.overrides[key]) {
@@ -528,12 +592,42 @@ export function createWorkspace() {
         });
     }
     function openRecovery(p) {
+        if (busy.value || syncing.value) return;
+        error.value = '';
         recovery.value = p;
         recoveryAction.value = p.status === 'uncertain' ? 'confirmed' : 'reschedule';
-        recoveryAt.value = '';
+        recoveryAt.value = canReschedule(p) ? localDateTime(new Date(p.scheduled_at)) : '';
         recoveryId.value = '';
     }
+    const canReschedule = (p) => ['scheduled', 'retry'].includes(p?.status);
+    const localDateTime = (at) =>
+        Number.isFinite(at.getTime())
+            ? new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+            : '';
+    async function reschedule(p, value) {
+        if (busy.value || syncing.value) return false;
+        return act(async () => {
+            const publication = state.value.publications.find((item) => item.id === p.id);
+            if (!canReschedule(publication)) throw new Error('This post can no longer be rescheduled.');
+            const at = new Date(value);
+            if (!value || !Number.isFinite(at.getTime()) || at.getTime() <= Date.now()) {
+                throw new Error('Choose a future date and time.');
+            }
+            if (localDateTime(at) !== value) {
+                throw new Error('This time does not exist in your timezone. Choose another time.');
+            }
+            await api('recover', { id: publication.id, action: 'reschedule', scheduled_at: at.toISOString() });
+            await refresh();
+            notice.value = 'Post rescheduled.';
+            return true;
+        });
+    }
     async function recover() {
+        if (!recovery.value || busy.value || syncing.value) return;
+        if (canReschedule(recovery.value)) {
+            if (await reschedule(recovery.value, recoveryAt.value)) recovery.value = null;
+            return;
+        }
         await act(async () => {
             const payload = { id: recovery.value.id, action: recoveryAction.value };
             if (payload.action === 'confirmed') payload.post_id = recoveryId.value;
@@ -718,6 +812,24 @@ export function createWorkspace() {
     }
     function keyboard(e) {
         if (!authenticated.value) return;
+        const postSelectionShortcut =
+            !e.defaultPrevented && page.value === 'Posts' &&
+            !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName) &&
+            !e.target?.isContentEditable && !e.target?.closest('dialog, [role="dialog"]');
+        if (
+            postSelectionShortcut && (e.metaKey || e.ctrlKey) &&
+            e.key.toLowerCase() === 'a' && !e.altKey && !e.shiftKey
+        ) {
+            e.preventDefault();
+            selectAllDrafts({ target: { checked: true } });
+        }
+        if (
+            postSelectionShortcut && e.key === 'Backspace' && selectedDraftIds.value.length &&
+            !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat
+        ) {
+            e.preventDefault();
+            return deleteDrafts(selectedDraftIds.value);
+        }
         if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
             e.preventDefault();
             newDraft();
@@ -773,6 +885,7 @@ export function createWorkspace() {
         authorizationForm,
         busy,
         canConnect,
+        canReschedule,
         cancel,
         changed,
         chooseAuth,
@@ -782,6 +895,7 @@ export function createWorkspace() {
         connect,
         connectionForm,
         currentWorkspace,
+        customTitle,
         customize,
         date,
         decideAuthorization,
@@ -801,6 +915,7 @@ export function createWorkspace() {
         history,
         items,
         loaded,
+        localDateTime,
         names,
         network,
         newDraft,
@@ -812,6 +927,7 @@ export function createWorkspace() {
         password,
         pending,
         postUrl,
+        postTitle,
         preview,
         providerStatus,
         publicationStatus,
@@ -829,6 +945,7 @@ export function createWorkspace() {
         resetForm,
         resetOverride,
         resetPassword,
+        reschedule,
         saveSlots,
         saveWorkspace,
         saving,
@@ -838,6 +955,7 @@ export function createWorkspace() {
         scheduleOpen,
         search,
         selectAllDrafts,
+        selectDraft,
         selectConnection,
         selectedDraftIds,
         signOut,
@@ -846,7 +964,6 @@ export function createWorkspace() {
         state,
         submitAuth,
         switchWorkspace,
-        symbols,
         sync,
         syncing,
         timezone,

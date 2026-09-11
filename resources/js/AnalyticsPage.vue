@@ -1,7 +1,8 @@
 <script setup>
+import AccountLogo from './AccountLogo.vue';
 import { useWorkspace } from './workspace.js';
 
-const { accountFor, busy, date, refreshMetrics, state } = useWorkspace();
+const { accountFor, busy, date, postTitle, refreshMetrics, state } = useWorkspace();
 </script>
 
 <template>
@@ -23,8 +24,8 @@ const { accountFor, busy, date, refreshMetrics, state } = useWorkspace();
         >
             <div class="metrics-heading">
                 <div>
-                    <h3>{{ p.snapshot.title }}</h3>
-                    <p>{{ accountFor(p)?.name }} · {{ date(p.published_at) }}</p>
+                    <h3>{{ postTitle(p) }}</h3>
+                    <p><AccountLogo :account="accountFor(p)" :size="16" /> {{ accountFor(p)?.name }} · Published: {{ date(p.published_at) }}</p>
                 </div>
                 <button class="outline" @click="refreshMetrics(p)" :disabled="busy">Refresh</button>
             </div>

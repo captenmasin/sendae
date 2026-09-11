@@ -36,8 +36,8 @@ const pages = {
     <AuthScreen v-if="!authenticated" />
     <div v-else class="app-shell">
         <AppSidebar :pages="pages" />
-        <main>
-            <header>
+        <main :class="{ 'posts-main': page === 'Posts' }">
+            <header v-if="page !== 'Posts'">
                 <div class="breadcrumb">
                     {{ currentWorkspace.name }}
                     <span>/</span>
