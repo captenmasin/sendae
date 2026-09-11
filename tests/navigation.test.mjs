@@ -225,6 +225,71 @@ test('composer header stays quiet throughout successful autosave', async () => {
     }
 });
 
+test('Post now saves the current draft and publishes immediately without opening scheduling', async t => {
+    const originals = { document: globalThis.document, localStorage: globalThis.localStorage };
+    const stored = new Map(), requests = [];
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    globalThis.localStorage = { getItem: key => stored.get(key), setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) };
+    t.after(() => {
+        for (const [key, value] of Object.entries(originals)) {
+            if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+        }
+    });
+    const draft = { id: 'draft', title: 'Post', version: 1, content: { items: [{ text: 'Latest edit', media_ids: [] }], overrides: {}, account_ids: ['account'] } };
+    const state = { drafts: [draft], accounts: [{ id: 'account', provider: 'threads', name: 'Account', status: 'connected' }], media: [], publications: [], settings: { workspace_id: 'workspace', providers: {} } };
+    const app = application({ authenticated: true, loaded: true, editor: structuredClone(draft), state, pending: true });
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        const payload = options.body ? JSON.parse(options.body) : undefined;
+        requests.push({ url, payload });
+        return { ok: true, json: async () => url === '/local/drafts' ? { draft: { ...payload, version: 2 } } : url === '/local/state' ? state : {} };
+    });
+    await app.render();
+    const button = () => findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).trim() === 'Post now');
+    const actions = findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.class === 'composer-actions');
+    assert.match(textContent(actions), /Post now\s*Schedule/);
+
+    for (const [busy, saving, accounts] of [[true, false, ['account']], [false, true, ['account']], [false, false, []], [false, false, ['account']]]) {
+        app.workspace.busy.value = busy;
+        app.workspace.saving.value = saving;
+        app.workspace.editor.value.content.account_ids = accounts;
+        await app.render();
+        assert.equal(button().props.disabled, busy || saving || !accounts.length);
+    }
+    await button().props.onClick();
+
+    assert.deepEqual(requests.map(request => request.url), ['/local/drafts', '/local/schedule', '/local/state']);
+    assert.equal(requests[0].payload.content.items[0].text, 'Latest edit');
+    assert.deepEqual(requests[1].payload, { draft_id: 'draft', version: 2, mode: 'now', request_id: requests[1].payload.request_id });
+    assert.ok(requests[1].payload.request_id);
+    assert.equal(stored.size, 0);
+    assert.equal(app.workspace.scheduleOpen.value, false);
+    assert.equal(app.workspace.scheduleMode.value, 'exact');
+    assert.equal(app.workspace.notice.value, 'Post sent for publishing.');
+    assert.equal(app.workspace.page.value, 'Queue');
+});
+
+test('Post now keeps the composer open and reports a failed save before publishing', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const requests = [];
+    t.mock.method(globalThis, 'fetch', async url => {
+        requests.push(url);
+        return { ok: false, status: 500, json: async () => ({ message: 'Save failed' }) };
+    });
+    const app = application({ authenticated: true, loaded: true, pending: true, editor: { id: 'draft', title: 'Post', version: 1, content: { items: [{ text: 'Unsaved edit', media_ids: [] }], overrides: {}, account_ids: [] } } });
+    await app.render();
+
+    await app.workspace.schedule('now');
+
+    assert.deepEqual(requests, ['/local/drafts']);
+    assert.equal(app.workspace.error.value, 'Save failed');
+    assert.equal(app.workspace.pending.value, true);
+    assert.equal(app.workspace.editor.value.id, 'draft');
+    assert.equal(app.workspace.page.value, 'Posts');
+    assert.equal(app.workspace.busy.value, false);
+});
+
 test('composer edits use shared autosave and failed saves keep the composer open for retry', async t => {
     const originalDocument = globalThis.document;
     globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };

@@ -220,7 +220,7 @@ const {
                     Selected accounts:
                     {{ chosen.map((a) => a.name).join(', ') || 'None. Select accounts in the composer.' }}
                 </p>
-                <form @submit.prevent="schedule">
+                <form @submit.prevent="schedule()">
                     <label>
                         Publish time
                         <select v-model="scheduleMode">

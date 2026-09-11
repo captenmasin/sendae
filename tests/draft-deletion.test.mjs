@@ -31,7 +31,7 @@ test('Command-A and Control-A select all posts without taking over text fields, 
 });
 
 test('manual and automatic synchronization wait while deletion is in progress',async()=>{
- const sync=runInNewContext(source.slice(source.indexOf('async function sync('),source.indexOf('async function schedule()'))+';sync',{busy:Vue.ref(true)});
+ const sync=runInNewContext(source.slice(source.indexOf('async function sync('),source.indexOf('async function schedule('))+';sync',{busy:Vue.ref(true)});
  await sync();
  await sync(false);
 });

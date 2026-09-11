@@ -448,14 +448,14 @@ export function createWorkspace() {
             syncing.value = false;
         }
     }
-    async function schedule() {
+    async function schedule(mode = scheduleMode.value) {
         await act(async () => {
             notice.value = '';
             await flush();
             const payload = {
                 draft_id: editor.value.id,
                 version: editor.value.version,
-                mode: scheduleMode.value,
+                mode,
             };
             if (payload.mode === 'exact') {
                 if (!scheduleAt.value) throw new Error('Choose a date and time.');

@@ -38,7 +38,7 @@ test('scheduled badges count down to the posting time without changing other sta
 
 test('scheduling retries keep their request ID and a new confirmed action gets a new ID', async () => {
  const source=readFileSync(new URL('../resources/js/workspace.js',import.meta.url),'utf8');
- const schedule=source.slice(source.indexOf('async function schedule()'),source.indexOf('async function cancel('));
+ const schedule=source.slice(source.indexOf('async function schedule('),source.indexOf('async function cancel('));
  const stored=new Map(), requests=[];
  let fail=true;
  const context=()=>({

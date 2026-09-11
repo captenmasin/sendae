@@ -25,6 +25,7 @@ const {
     removePost,
     resetOverride,
     saving,
+    schedule,
     scheduleOpen,
     state,
     syncing,
@@ -158,14 +159,20 @@ const postName = computed({
             <button class="text-button" @click="deleteDraft" :disabled="busy || saving || syncing">
                 Delete post
             </button>
-            <button class="primary" @click="scheduleOpen = true" :disabled="busy || saving">
-                Schedule
-                <span>↗</span>
-            </button>
+            <div class="composer-actions">
+                <button class="outline" @click="schedule('now')" :disabled="busy || saving || !chosen.length">
+                    Post now
+                </button>
+                <button class="primary" @click="scheduleOpen = true" :disabled="busy || saving">
+                    Schedule
+                    <span>↗</span>
+                </button>
+            </div>
         </footer>
     </fieldset>
 </template>
 
 <style scoped>
 .post-name-label { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+.composer-actions { display: flex; align-items: center; gap: 8px; }
 </style>
