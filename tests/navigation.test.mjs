@@ -1,11 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import * as Vue from 'vue';
 import * as Sonner from 'vue-sonner';
 import { parse, compileScript } from 'vue/compiler-sfc';
 import { renderToString } from '@vue/server-renderer';
 import * as Workspace from '../resources/js/workspace.js';
+import * as LinkPreviews from '../resources/js/linkPreviews.js';
+
+test('Command-comma opens Settings while typing and ignores other modifiers or signed-out sessions', () => {
+    const source = readFileSync(new URL('../resources/js/workspace.js', import.meta.url), 'utf8');
+    for (const options of [{}, { metaKey: false }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }, { defaultPrevented: true }, { signedOut: true }]) {
+        const page = Vue.ref('Calendar');
+        let prevented = false;
+        const keyboard = runInNewContext(source.slice(source.indexOf('function keyboard('), source.indexOf('function beforeUnload(')) + ';keyboard', {
+            authenticated: Vue.ref(!options.signedOut), page,
+        });
+
+        keyboard({ key: ',', metaKey: true, target: { tagName: 'INPUT' }, ...options, preventDefault() { prevented = true; } });
+
+        const opensSettings = Object.keys(options).length === 0;
+        assert.equal(page.value, opensSettings ? 'Settings' : 'Calendar');
+        assert.equal(prevented, opensSettings);
+    }
+});
 
 // Compile the real component tree with Vue's installed compiler, without a browser or test dependency.
 function application(initial = {}) {
@@ -30,7 +49,7 @@ function application(initial = {}) {
         const modules = [];
         const lucide = new Proxy({}, { get: (_target, exportName) => exportName === '__esModule' ? true : { name: exportName, setup: () => () => Vue.h('svg', { 'aria-hidden': 'true' }) } });
         const code = compiled.content.replace(/import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"];?/g, (_, bindings, source) => {
-            const value = source === 'vue' ? Vue : source === 'vue-sonner' ? Sonner : source === '@lucide/vue' ? lucide : source === './workspace.js' ? workspaceModule : component(source.slice(2));
+            const value = source === 'vue' ? Vue : source === 'vue-sonner' ? Sonner : source === '@lucide/vue' ? lucide : source === './workspace.js' ? workspaceModule : source === './linkPreviews.js' ? LinkPreviews : component(source.slice(2));
             modules.push(value);
             return `const ${bindings.replace(/\bas\b/g, ':')} = modules[${modules.length - 1}];`;
         });
@@ -78,6 +97,7 @@ function findNode(tree, predicate) {
 }
 
 function textContent(node) {
+    if (node?.type === Vue.Comment) return '';
     return typeof node?.children === 'string' ? node.children : (node?.children || []).map(textContent).join('');
 }
 
@@ -118,7 +138,7 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
             drafts: [draft], accounts: [], media: [],
             publications: [
                 { id: 'queued', draft_id: 'draft', status: 'scheduled', snapshot: { title: 'Queued post' } },
-                { id: 'published', draft_id: 'draft', status: 'published', snapshot: { title: 'Published post' }, metrics_status: 'available' },
+                { id: 'published', draft_id: 'old-draft', status: 'published', snapshot: { title: 'Published post' }, metrics_status: 'available' },
             ],
             settings: { providers: {}, workspace_id: 'personal', workspaces: [{ id: 'personal', name: 'Personal', icon: '◻' }], email: 'person@example.com' },
         },
@@ -126,7 +146,7 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
     assert.match(await app.render(), /Still editing/);
     const originalEditor = app.workspace.editor.value;
 
-    for (const page of ['Queue', 'Published', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
+    for (const page of ['Calendar', 'Published', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
         const button = findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes(page));
         assert.ok(button, page + ' navigation exists');
         button.props.onClick();
@@ -139,13 +159,13 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
         assert.ok(findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes('New post')), 'New post remains visible on ' + page);
         const active = findNode(app.nodes.get('AppSidebar.vue'), node => node?.props?.['aria-current'] === 'page');
         assert.ok(textContent(active).includes(page));
-        if (page === 'Queue') { assert.match(html, /Queued post/); assert.doesNotMatch(html, /Published post/); }
+        if (page === 'Calendar') { assert.match(html, /Queued post/); assert.doesNotMatch(html, /Published post/); }
         if (page === 'Published') { assert.match(html, /Published post/); assert.doesNotMatch(html, /Queued post/); }
         if (page === 'Settings') assert.match(html, /person@example.com/);
         if (page === 'Posts') assert.match(html, /Still editing/);
     }
     const counts = [];
-    for (const label of ['Posts', 'Queue']) {
+    for (const label of ['Posts', 'Calendar']) {
         const button = findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes(label));
         counts.push(textContent(findNode(button, node => node?.props?.class === 'count')));
     }
@@ -161,7 +181,7 @@ test('refresh restores every selected sidebar page', async t => {
     } };
     t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
 
-    for (const page of ['Queue', 'Published', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
+    for (const page of ['Calendar', 'Published', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
         const app = application({ authenticated: true, loaded: true });
         await app.render();
         const unmount = app.mountNotifications();
@@ -213,6 +233,26 @@ test('authentication screens hide the workspace while password reset remains acc
     assert.match(await app.render(), /Choose a new password/);
 });
 
+test('auth errors render as alerts across sign-in, registration and recovery and clear on navigation', async () => {
+    const app = application({ loaded: true });
+    await app.render();
+
+    for (const mode of ['signIn', 'register', 'forgotPassword']) {
+        app.workspace.chooseAuth(mode);
+        app.workspace.error.value = 'The sign-in details did not match.';
+        await app.render();
+        const alert = findNode(app.nodes.get('AuthScreen.vue'), node => node?.props?.role === 'alert');
+
+        assert.ok(alert);
+        assert.equal(textContent(alert), 'The sign-in details did not match.');
+        assert.ok(findNode(alert, node => node?.props?.name === 'CircleAlert'));
+
+        app.workspace.chooseAuth(mode === 'signIn' ? 'register' : 'signIn');
+        await app.render();
+        assert.ok(!findNode(app.nodes.get('AuthScreen.vue'), node => node?.props?.role === 'alert'));
+    }
+});
+
 test('composer header stays quiet throughout successful autosave', async () => {
     const app = application({ authenticated: true, loaded: true, editor: { id: 'draft', title: 'Post', content: { items: [{ text: 'Typing', media_ids: [] }], overrides: {}, account_ids: [] } } });
     await app.render();
@@ -221,7 +261,7 @@ test('composer header stays quiet throughout successful autosave', async () => {
         app.workspace.saving.value = saving;
         app.workspace.pending.value = pending;
         await app.render();
-        const header = findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.class === 'composer-top');
+        const header = findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.class === 'composer-heading');
         assert.doesNotMatch(textContent(header), /Unsaved changes|Saving|Saved/);
         assert.ok(findNode(header, node => node?.props?.['aria-label'] === 'Close composer'));
     }
@@ -255,19 +295,61 @@ test('Post now saves the current draft and publishes immediately without opening
         app.workspace.saving.value = saving;
         app.workspace.editor.value.content.account_ids = accounts;
         await app.render();
-        assert.equal(button().props.disabled, busy || saving || !accounts.length);
+        assert.equal(button().props.disabled, busy || !accounts.length);
+        for (const label of ['Schedule', 'Delete post']) {
+            const action = findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).trim() === label);
+            assert.equal(action.props.disabled, busy);
+        }
     }
     await button().props.onClick();
 
     assert.deepEqual(requests.map(request => request.url), ['/local/drafts', '/local/schedule', '/local/state']);
     assert.equal(requests[0].payload.content.items[0].text, 'Latest edit');
-    assert.deepEqual(requests[1].payload, { draft_id: 'draft', version: 2, mode: 'now', request_id: requests[1].payload.request_id });
+    assert.deepEqual(requests[1].payload, { draft_id: 'draft', version: 2, mode: 'now', request_id: requests[1].payload.request_id, draft_snapshot: JSON.stringify({ title: draft.title, content: draft.content }) });
     assert.ok(requests[1].payload.request_id);
     assert.equal(stored.size, 0);
     assert.equal(app.workspace.scheduleOpen.value, false);
     assert.equal(app.workspace.scheduleMode.value, 'exact');
     assert.equal(app.workspace.notice.value, 'Post sent for publishing.');
-    assert.equal(app.workspace.page.value, 'Queue');
+    assert.equal(app.workspace.page.value, 'Calendar');
+});
+
+test('scheduled posts stay selected in Posts and reopen like normal drafts', async t => {
+    const originals = { document: globalThis.document, localStorage: globalThis.localStorage };
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    const stored = new Map();
+    globalThis.localStorage = { getItem: key => stored.get(key), setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) };
+    t.after(() => {
+        for (const [key, value] of Object.entries(originals)) {
+            if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+        }
+    });
+    for (const mode of ['exact', 'queue']) {
+        const draft = { id: 'draft', title: 'Launch', version: 1, content: { items: [{ text: 'Scheduled announcement', media_ids: [] }], overrides: {}, account_ids: ['account'] } };
+        const state = { drafts: [draft], accounts: [{ id: 'account', provider: 'threads', name: 'Account', status: 'connected' }], media: [], publications: [], settings: { workspace_id: 'workspace', providers: {} } };
+        const app = application({ authenticated: true, loaded: true, page: 'Posts', editor: structuredClone(draft), state, selectedDraftIds: ['draft'], scheduleOpen: true, scheduleAt: '2026-10-01T12:00' });
+        await app.render();
+        t.mock.method(globalThis, 'fetch', async url => ({ ok: true, json: async () => url === '/local/state' ? {
+            ...state, publications: [{ id: 'scheduled', draft_id: draft.id, status: 'scheduled', scheduled_at: '2026-10-01T12:00:00Z' }],
+        } : {} }));
+
+        await app.workspace.schedule(mode);
+
+        assert.equal(app.workspace.page.value, 'Posts');
+        assert.equal(app.workspace.scheduleOpen.value, false);
+        assert.equal(app.workspace.drafts.value.length, 1);
+        assert.deepEqual(app.workspace.selectedDraftIds.value, ['draft']);
+        await app.workspace.closeDraft();
+        await app.render();
+        const row = findNode(app.nodes.get('PostsPage.vue'), node => node?.type === 'button' && textContent(node).includes('Launch'));
+        assert.ok(row);
+        await row.props.onClick({});
+        await app.render();
+        assert.equal(app.workspace.editor.value.id, draft.id);
+        assert.equal(findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'textarea').props.readonly, undefined);
+        assert.equal(findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).trim() === 'Update'), undefined);
+        t.mock.restoreAll();
+    }
 });
 
 test('Post now keeps the composer open and reports a failed save before publishing', async t => {
@@ -432,7 +514,7 @@ test('inbox range selection follows filtered rows, recovers missing anchors and 
     await workspace.selectAllDrafts({ target: { checked: true } });
     assert.equal(workspace.editor.value.id, 2);
     assert.deepEqual(workspace.selectedDraftIds.value, [2]);
-    workspace.page.value = 'Queue';
+    workspace.page.value = 'Calendar';
     workspace.page.value = 'Posts';
     workspace.search.value = '';
     await Vue.nextTick();
@@ -497,19 +579,23 @@ test('selection cannot change during ongoing work or target a hidden post', asyn
     assert.deepEqual(workspace.selectedDraftIds.value, ['a']);
 });
 
-test('connected account images appear across posts, publications, analytics and account selection', async () => {
+test('account images appear across the workspace while Posts and Calendar use network logos', async () => {
     const account = { id: 'account', provider: 'threads', name: 'My profile', status: 'connected', avatar_url: 'https://images.example/account.jpg' };
     const draft = { id: 'draft', title: 'Post', content: { items: [{ text: 'Hello', media_ids: [] }], overrides: {}, account_ids: [account.id] } };
     const app = application({ authenticated: true, loaded: true, editor: structuredClone(draft), state: {
         drafts: [draft], accounts: [account], media: [], settings: { providers: {} },
-        publications: ['scheduled', 'published'].map(status => ({ id: status, account_id: account.id, draft_id: draft.id, status, snapshot: { title: 'Post' }, metrics_status: 'available' })),
+        publications: ['scheduled', 'published'].map(status => ({ id: status, account_id: account.id, draft_id: status === 'published' ? 'old-draft' : draft.id, status, snapshot: { title: 'Post' }, metrics_status: 'available' })),
     } });
-    for (const page of ['Posts', 'Queue', 'Published', 'Analytics', 'Accounts']) {
+    for (const page of ['Posts', 'Calendar', 'Published', 'Analytics', 'Accounts']) {
         await app.render();
         app.workspace.page.value = page;
         const html = await app.render();
-        assert.equal((html.match(/src="https:\/\/images.example\/account.jpg"/g) || []).length, 1, page);
+        assert.equal((html.match(/src="https:\/\/images.example\/account.jpg"/g) || []).length, ['Posts', 'Calendar'].includes(page) ? 0 : 1, page);
+        if (page === 'Calendar') assert.match(html, /aria-label="Threads"><svg/);
         if (page === 'Posts') {
+            const accounts = html.match(/<span class="post-row-accounts">[^]*?<\/button>/)?.[0];
+            assert.ok(accounts);
+            assert.match(accounts, /aria-label="Threads"><svg/);
             const destination = html.match(/<label class="destination[^]*?<\/label>/)?.[0];
             assert.ok(destination);
             assert.match(destination, /aria-label="Threads"><svg/);
@@ -521,12 +607,26 @@ test('connected account images appear across posts, publications, analytics and 
     assert.match(await app.render(), /src="https:\/\/images.example\/account.jpg"/);
 });
 
+test('post list marks only accounts with their own network content and removes the dot after reset', async () => {
+    const accounts = [{ id: 'threads', provider: 'threads', name: 'Threads profile' }, { id: 'x', provider: 'x', name: 'X profile' }];
+    const draft = { id: 'draft', title: 'Post', content: { items: [{ text: 'Shared', media_ids: [] }], overrides: { threads: [{ text: 'Custom', media_ids: [] }] }, account_ids: accounts.map(account => account.id) } };
+    const app = application({ authenticated: true, loaded: true, page: 'Posts', state: { drafts: [draft], accounts, publications: [], media: [], settings: {} } });
+
+    const html = await app.render();
+    assert.equal((html.match(/class="post-account-dot"/g) || []).length, 1);
+    assert.match(html, /aria-label="Threads profile: Custom post content"/);
+    assert.doesNotMatch(html, /aria-label="X profile: Custom post content"/);
+
+    delete app.workspace.state.value.drafts[0].content.overrides.threads;
+    assert.doesNotMatch(await app.render(), /class="post-account-dot"/);
+});
+
 test('legacy timestamp titles become previews across drafts, calendars, publication dialogs and analytics', async () => {
     const draft = { id: 'draft', title: '10 Sept, 11:20', updated_at: '2026-09-11T09:00:00Z', content: { items: [{ text: 'Our next launch is coming\nMore details soon.', media_ids: [] }], overrides: {}, account_ids: [] } };
     const queued = { id: 'queued', draft_id: draft.id, status: 'scheduled', metrics_status: 'not_refreshed', scheduled_at: '2026-09-18T10:33:00Z', snapshot: { title: draft.title, items: [{ text: 'The original scheduled announcement', media_ids: [] }] } };
     const app = application({ authenticated: true, loaded: true, editor: structuredClone(draft), state: {
         drafts: [draft], accounts: [], media: [], settings: { providers: {} },
-        publications: [queued, { ...queued, id: 'published', status: 'published', published_at: '2026-09-10T10:33:00Z', snapshot: { title: draft.title, items: [{ text: 'The original published announcement', media_ids: [] }] } }],
+        publications: [queued, { ...queued, id: 'published', draft_id: 'old-draft', status: 'published', published_at: '2026-09-10T10:33:00Z', snapshot: { title: draft.title, items: [{ text: 'The original published announcement', media_ids: [] }] } }],
     } });
 
     let html = await app.render();
@@ -538,14 +638,14 @@ test('legacy timestamp titles become previews across drafts, calendars, publicat
     app.workspace.search.value = 'launch';
     assert.equal(app.workspace.drafts.value.length, 1);
 
-    for (const page of ['Queue', 'Published', 'Analytics']) {
+    for (const page of ['Calendar', 'Published', 'Analytics']) {
         app.workspace.page.value = page;
         html = await app.render();
-        assert.match(html, page === 'Queue' ? /The original scheduled announcement/ : /The original published announcement/);
+        assert.match(html, page === 'Calendar' ? /The original scheduled announcement/ : /The original published announcement/);
         assert.doesNotMatch(html, /Our next launch|10 Sept, 11:20/);
-        assert.match(html, page === 'Analytics' ? /Published:/ : /Scheduled:/);
+        assert.match(html, page === 'Calendar' ? /Scheduled:/ : /Published:/);
     }
-    app.workspace.page.value = 'Queue';
+    app.workspace.page.value = 'Calendar';
     app.workspace.openRecovery(queued);
     html = await app.render();
     assert.match(html, /<p>The original scheduled announcement<\/p>/);
@@ -656,7 +756,34 @@ test('shared draft warns when network versions exist and viewing a network does 
     assert.match(await app.render(), /Network-specific versions will not change when you edit the shared draft/);
 });
 
-test('scheduled posts stay locked until the editor is unlocked', async () => {
+test('post preview opens in a modal and closes with its close button or Escape', async () => {
+    const draft = { id: 'draft', title: 'Post', content: { items: [{ text: 'Preview this post', media_ids: [] }], overrides: {}, account_ids: [] } };
+    const app = application({ authenticated: true, loaded: true, editor: draft, state: {
+        drafts: [draft], accounts: [], media: [], publications: [], settings: { providers: {} },
+    } });
+    await app.render();
+    const tree = () => app.nodes.get('PostComposer.vue');
+    const dialog = () => findNode(tree(), node => node?.type === 'dialog');
+    assert.equal(dialog(), undefined);
+    for (const closeWith of ['button', 'escape']) {
+        const tabs = findNode(tree(), node => node?.props?.class === 'network-tabs');
+        const trigger = findNode(tabs, node => node?.type === 'button' && textContent(node).includes('Show post preview'));
+        assert.equal(trigger.props['aria-haspopup'], 'dialog');
+        trigger.props.onClick();
+        await app.render();
+        assert.equal(dialog().props['aria-labelledby'], 'post-preview-title');
+        if (closeWith === 'button') {
+            findNode(dialog(), node => node?.props?.['aria-label'] === 'Close post preview').props.onClick();
+        } else {
+            dialog().props.onCancel({ preventDefault() {} });
+        }
+        await app.render();
+        assert.equal(dialog(), undefined);
+        assert.equal(app.workspace.editor.value.content.items[0].text, 'Preview this post');
+    }
+});
+
+test('scheduled posts are editable immediately without a manual Update action', async () => {
     const draft = { id: 'draft', title: 'Post', content: { items: [{ text: 'Hello', media_ids: [] }], overrides: {}, account_ids: [] } };
     const app = application({
         authenticated: true, loaded: true, editor: structuredClone(draft),
@@ -665,14 +792,11 @@ test('scheduled posts stay locked until the editor is unlocked', async () => {
             publications: [{ id: 'queued', draft_id: 'draft', status: 'scheduled', snapshot: { title: 'Post' } }],
         },
     });
-    let html = await app.render();
-    assert.match(html, /already scheduled/);
+    const html = await app.render();
+    assert.doesNotMatch(html, /already scheduled|Edit draft anyway/);
     const title = () => findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.['aria-label'] === 'Post title');
-    assert.equal(title().props.readonly, true);
-    findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).includes('Edit draft anyway')).props.onClick();
-    html = await app.render();
-    assert.equal(title().props.readonly, false);
-    assert.match(html, /already scheduled/);
+    assert.equal(title().props.readonly, undefined);
+    assert.equal(findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).includes('Update')), undefined);
 });
 
 test('activity lists draft and publication events in order', async () => {
@@ -691,3 +815,120 @@ test('activity lists draft and publication events in order', async () => {
     assert.deepEqual(app.workspace.activity.value.map(event => event.type), ['published', 'updated', 'created']);
 });
 
+
+test('published drafts cannot open or appear in Posts, and sync closes a newly published composer', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const draft = { id: 'draft', title: 'Published draft', content: { items: [{ text: 'Original text', media_ids: [] }], overrides: {}, account_ids: [] } };
+    const state = { drafts: [draft], accounts: [], media: [], publications: [], settings: { providers: {}, paired: true } };
+    const app = application({ authenticated: true, loaded: true, state, editor: structuredClone(draft), selectedDraftIds: [draft.id] });
+    await app.render();
+    const published = { ...state, publications: [{ id: 'publication', draft_id: draft.id, status: 'published', scheduled_at: '2026-09-11T12:00:00Z', published_at: '2026-09-11T12:00:00Z', snapshot: { title: 'The published snapshot' } }] };
+    t.mock.method(globalThis, 'fetch', async url => ({ ok: true, json: async () => url === '/local/state' ? published : {} }));
+
+    await app.workspace.sync(false);
+
+    assert.equal(app.workspace.editor.value, null);
+    assert.deepEqual(app.workspace.drafts.value, []);
+    assert.deepEqual(app.workspace.selectedDraftIds.value, []);
+    assert.doesNotMatch(await app.render(), /aria-label="Post title"|Published draft/);
+    assert.equal(await app.workspace.openDraft(draft), false);
+    assert.equal(app.workspace.page.value, 'Published');
+    const html = await app.render();
+    assert.match(html, /The published snapshot/);
+    assert.doesNotMatch(html, /aria-label="Post title"|>Recover<|>Change date/);
+});
+
+test('legacy Queue navigation opens Calendar after an app reload', async t => {
+    const originalWindow = globalThis.window;
+    globalThis.window = { sessionStorage: { getItem: () => 'Queue', setItem() {} } };
+    t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
+    const app = application({ authenticated: true, loaded: true });
+
+    const html = await app.render();
+
+    assert.equal(app.workspace.page.value, 'Calendar');
+    assert.match(html, /<h1>Calendar<\/h1>/);
+    assert.doesNotMatch(html, />\s*Queue\s*</);
+});
+
+test('settings expose workspace management, theme choices and profile editing together', async () => {
+    const app = application({ authenticated: true, loaded: true, page: 'Settings', state: {
+        drafts: [], accounts: [], media: [], publications: [], settings: { providers: {}, workspace_id: 'one', workspaces: [{ id: 'one', name: 'Studio' }, { id: 'two', name: 'Personal' }], name: 'Ada', email: 'ada@example.com' },
+    } });
+    const html = await app.render();
+    for (const heading of ['Workspace', 'Appearance', 'Account']) assert.match(html, new RegExp('>' + heading + '</h2>'));
+    for (const action of ['Edit workspace', 'Delete workspace', 'Save account', 'Sign out']) {
+        assert.ok(findNode(app.nodes.get('SettingsPage.vue'), node => node?.type === 'button' && textContent(node).includes(action)), action);
+    }
+    app.workspace.setTheme('dark');
+    await app.render();
+    const dark = findNode(app.nodes.get('SettingsPage.vue'), node => node?.type === 'button' && textContent(node).includes('Dark'));
+    assert.equal(dark.props['aria-pressed'], true);
+    assert.equal(app.workspace.colorScheme.value, 'dark');
+});
+
+test('workspace deletion confirms the target then clears the editor only after server success', async t => {
+    const originalDocument = globalThis.document, originalConfirm = globalThis.confirm;
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    let confirmed = false;
+    globalThis.confirm = message => { assert.match(message, /Delete “Studio”/); return confirmed; };
+    t.after(() => {
+        if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument;
+        if (originalConfirm === undefined) delete globalThis.confirm; else globalThis.confirm = originalConfirm;
+    });
+    const draft = { id: 'draft', title: '', content: { items: [{ text: 'Unsaved', media_ids: [] }], overrides: {}, account_ids: [] } };
+    const state = { drafts: [draft], accounts: [], media: [], publications: [], settings: { providers: {}, workspace_id: 'one', workspaces: [{ id: 'one', name: 'Studio' }, { id: 'two', name: 'Personal' }] } };
+    const app = application({ authenticated: true, loaded: true, state, editor: structuredClone(draft) });
+    await app.render();
+    const calls = [];
+    let fail = true;
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        calls.push(url);
+        if (url === '/local/deleteWorkspace') {
+            assert.equal(JSON.parse(options.body).id, 'one');
+            return { ok: !fail, json: async () => fail ? { message: 'Wait for publishing to finish.' } : { deleted: true, workspace_id: 'two' } };
+        }
+        return { ok: true, json: async () => ({ ...state, drafts: [], settings: { ...state.settings, workspace_id: 'two', workspaces: [{ id: 'two', name: 'Personal' }] } }) };
+    });
+    await app.workspace.deleteWorkspace();
+    assert.deepEqual(calls, []);
+    confirmed = true;
+    await app.workspace.deleteWorkspace();
+    assert.equal(app.workspace.editor.value.id, 'draft');
+    assert.equal(app.workspace.currentWorkspace.value.id, 'one');
+    assert.match(app.workspace.error.value, /Wait for publishing/);
+    fail = false;
+    await app.workspace.deleteWorkspace();
+    assert.equal(app.workspace.editor.value, null);
+    assert.equal(app.workspace.currentWorkspace.value.id, 'two');
+    assert.equal(app.workspace.notice.value, 'Workspace deleted.');
+    calls.length = 0;
+    await app.workspace.deleteWorkspace();
+    assert.deepEqual(calls, []);
+    assert.match(app.workspace.error.value, /only workspace/);
+});
+
+test('Unschedule in the schedule dialog returns a scheduled post to a draft', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf-token' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const draft = { id: 'draft', title: 'Launch', version: 1, content: { items: [{ text: 'Keep this text', media_ids: [] }], overrides: {}, account_ids: [] } };
+    const state = { drafts: [draft], accounts: [], media: [], publications: [{ id: 'scheduled', draft_id: draft.id, status: 'scheduled' }], settings: { providers: {} } };
+    const app = application({ authenticated: true, loaded: true, editor: structuredClone(draft), state });
+    await app.render();
+    findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).includes('Change date')).props.onClick();
+    await app.render();
+    const button = findNode(app.nodes.get('AppDialogs.vue'), node => node?.type === 'button' && textContent(node).trim() === 'Unschedule');
+    assert.ok(button);
+    t.mock.method(globalThis, 'fetch', async url => ({ ok: true, json: async () => url === '/local/state' ? { ...state, publications: state.publications.map(post => ({ ...post, status: 'cancelled' })) } : {} }));
+
+    await button.props.onClick();
+
+    const html = await app.render();
+    assert.doesNotMatch(html, /already scheduled|Scheduled ·|Cancelled ·/);
+    assert.match(html, />Draft</);
+    assert.equal(findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.['aria-label'] === 'Post title').props.readonly, undefined);
+    assert.equal(app.workspace.editor.value.content.items[0].text, 'Keep this text');
+});

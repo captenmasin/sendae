@@ -25,7 +25,7 @@ watch(error, (message) => {
 });
 const pages = {
     Posts: { component: PostsPage, icon: 'Inbox' },
-    Queue: { component: PublicationsPage, icon: 'Clock' },
+    Calendar: { component: PublicationsPage, icon: 'CalendarDays' },
     Published: { component: PublicationsPage, icon: 'ArrowUpRight' },
     Activity: { component: ActivityPage, icon: 'Activity' },
     Analytics: { component: AnalyticsPage, icon: 'ChartColumn' },
@@ -33,7 +33,8 @@ const pages = {
     Settings: { component: SettingsPage, icon: 'Settings' },
 };
 try {
-    const savedPage = window.sessionStorage.getItem('sendae.page');
+    const storedPage = window.sessionStorage.getItem('sendae.page');
+    const savedPage = storedPage === 'Queue' ? 'Calendar' : storedPage;
     if (Object.hasOwn(pages, savedPage)) page.value = savedPage;
 } catch {
     // Navigation remains available when session storage is unavailable.

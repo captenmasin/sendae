@@ -1,4 +1,5 @@
 <script setup>
+import Icon from './Icon.vue';
 import { useWorkspace } from './workspace.js';
 
 const {
@@ -35,7 +36,10 @@ const {
                     }}
                 </h1>
                 <p v-if="authMode === 'forgotPassword'">We’ll email you a secure reset link.</p>
-                <p v-if="error" class="error-text" role="alert">{{ error }}</p>
+                <div v-if="error" class="auth-error" role="alert">
+                    <Icon name="CircleAlert" :size="18" />
+                    <span>{{ error }}</span>
+                </div>
                 <p v-if="authNotice" role="status">{{ authNotice }}</p>
                 <form @submit.prevent="submitAuth">
                     <label v-if="authMode === 'register'">

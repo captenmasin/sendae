@@ -24,12 +24,13 @@ class AccountAvatarsTest extends TestCase
         $state = ['drafts' => [], 'accounts' => [$account], 'media' => [], 'publications' => [], 'settings' => []];
         $withoutPicture = $state;
         unset($withoutPicture['accounts'][0]['avatar_url']);
+        $withoutPicture['accounts'][0]['verified'] = false;
         Http::fake(['service.example/api/state' => Http::sequence()->push($state)->push($withoutPicture)]);
         $this->postJson('/local/sync')->assertOk();
         $this->assertDatabaseHas('accounts', ['id' => $id, 'avatar_url' => 'https://images.example/page.jpg', 'verified' => 1]);
         $this->getJson('/local/state')->assertOk()->assertJsonPath('accounts.0.avatar_url', 'https://images.example/page.jpg')->assertJsonPath('accounts.0.verified', true);
         $this->postJson('/local/sync')->assertOk();
-        $this->getJson('/local/state')->assertOk()->assertJsonPath('accounts.0.avatar_url', null);
+        $this->getJson('/local/state')->assertOk()->assertJsonPath('accounts.0.avatar_url', null)->assertJsonPath('accounts.0.verified', false);
         Http::assertSentCount(2);
     }
 }

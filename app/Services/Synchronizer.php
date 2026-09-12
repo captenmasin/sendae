@@ -133,6 +133,33 @@ class Synchronizer
         });
     }
 
+    public function deleteWorkspace(string $id): array
+    {
+        $this->requireAuth();
+
+        return Cache::lock('sendae-sync', 180)->block(2, function () use ($id): array {
+            $result = $this->request()->delete('workspaces/'.$id)->throw()->json();
+            abort_unless(($result['deleted'] ?? false) === true && collect($result['workspaces'] ?? [])->contains('id', $result['workspace_id'] ?? null), 502, 'Sendae could not confirm workspace deletion.');
+            $files = DB::transaction(function () use ($id, $result): array {
+                $files = DB::table('media')->where('workspace_id', $id)->whereNotNull('path')->pluck('path')->all();
+                foreach (['publications', 'drafts', 'accounts', 'media'] as $table) {
+                    DB::table($table)->where('workspace_id', $id)->delete();
+                }
+                Setting::write('workspaces', json_encode($result['workspaces']));
+                if (Setting::read('workspace_id') === $id) {
+                    Setting::write('workspace_id', $result['workspace_id']);
+                    Setting::where('key', 'providers')->delete();
+                }
+                Setting::where('key', 'notified_publications:'.$id)->delete();
+
+                return [...$files, 'workspace-images/'.$id];
+            });
+            Storage::disk('local')->delete($files);
+
+            return ['deleted' => true, 'workspace_id' => Setting::read('workspace_id')];
+        });
+    }
+
     public function accountRequest(string $action, array $data): array
     {
         abort_unless(in_array($action, ['register', 'forgot-password', 'reset-password']), 404);
@@ -166,9 +193,13 @@ class Synchronizer
             $draft = Draft::withTrashed()->findOrFail($id);
             $response = $this->request()->asJson()->post('deleteDraft', ['id' => $id, 'version' => (int) ($draft->synced_version ?? 0)])->throw();
             abort_unless($response->json('deleted') === true, 502, 'Sendae could not delete this draft.');
-            $draft->delete();
+            $cancelledIds = $response->json('cancelled_publication_ids', []);
+            DB::transaction(function () use ($draft, $cancelledIds) {
+                Publication::where('draft_id', $draft->id)->whereIn('id', $cancelledIds)->update(['status' => 'cancelled']);
+                $draft->delete();
+            });
 
-            return ['deleted' => true];
+            return ['deleted' => true, 'cancelled_publication_ids' => $cancelledIds];
         });
     }
 
@@ -191,7 +222,7 @@ class Synchronizer
                 }
                 foreach (Draft::where('dirty', true)->get() as $draft) {
                     $version = $draft->version;
-                    $response = $this->request()->post('drafts', ['id' => $draft->id, 'title' => $draft->title, 'content' => $draft->content, 'version' => $draft->synced_version]);
+                    $response = $this->request()->post('drafts', ['id' => $draft->id, 'title' => $draft->title, 'content' => $draft->content, 'version' => $draft->synced_version, 'restore_scheduled' => Publication::where('draft_id', $draft->id)->whereIn('status', ['scheduled', 'retry'])->exists()]);
                     if ($response->status() === 410) {
                         $draft->delete();
 
@@ -225,7 +256,7 @@ class Synchronizer
                         continue;
                     }
                     if (! $current || ! $current->dirty) {
-                        Draft::updateOrCreate(['id' => $d['id']], ['title' => $d['title'], 'content' => $d['content'], 'version' => $d['version'], 'synced_version' => $d['version'], 'dirty' => false]);
+                        Draft::updateOrCreate(['id' => $d['id']], ['title' => $d['title'], 'content' => $d['content'], 'version' => $d['version'], 'synced_version' => $d['version'], 'dirty' => false, 'deleted_at' => $d['deleted_at'] ?? null]);
                     }
                 }
                 foreach ($state['accounts'] as $a) {
@@ -294,10 +325,16 @@ class Synchronizer
     {
         $this->requireAuth();
         $draft = isset($data['draft_id']) ? Draft::findOrFail($data['draft_id']) : null;
-        if ($draft && ($data['version'] ?? null) !== $draft->version) {
+        $snapshot = $draft?->only(['title', 'content']);
+        if ($draft && array_key_exists('draft_snapshot', $data)) {
+            Validator::make($data, ['draft_snapshot' => 'required|string|json'])->validate();
+            if (json_decode($data['draft_snapshot'], true, flags: JSON_THROW_ON_ERROR) !== $snapshot) {
+                app(Workspace::class)->invalid('content', 'Your latest edits have not been saved yet. Try editing again to save and update this post.');
+            }
+        } elseif ($draft && ($data['version'] ?? null) !== $draft->version) {
             app(Workspace::class)->invalid('version', 'This draft changed. Reload it before scheduling.');
         }
-        $snapshot = $draft?->only(['title', 'content']);
+        unset($data['draft_snapshot']);
         $this->run($draft !== null);
         if ($draft) {
             $draft->refresh();

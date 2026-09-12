@@ -32,6 +32,11 @@ class WorkspaceController extends Controller
         return $sync->switchWorkspace($request->validate(['id' => 'required|string|size:64'])['id']);
     }
 
+    public function deleteWorkspace(Request $request, Synchronizer $sync): array
+    {
+        return $sync->deleteWorkspace($request->validate(['id' => 'required|string|size:64'])['id']);
+    }
+
     public function state(Workspace $workspace)
     {
         return $workspace->state();

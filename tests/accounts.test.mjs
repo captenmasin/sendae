@@ -21,18 +21,24 @@ test('platform cards identify each account and remove disconnected accounts from
   state:{accounts:[
    {id:'threads',provider:'threads',name:'capten_masin',avatar_url:'https://images.example/profile.jpg',status:'connected',timezone:'Europe/London',slots:[],verified:true},
    {id:'facebook',provider:'facebook',name:'Novogamer',status:'connected',timezone:'Europe/London',slots:[{day:1,time:'09:00'}]},
+   {id:'expired',provider:'facebook',name:'Expired Page',status:'expired',timezone:'Europe/London',slots:[]},
    {id:'removed',provider:'facebook',name:'Removed Page',status:'disconnected',timezone:'Europe/London',slots:[]},
   ]},canConnect:()=>true,
  })}));
  assert.match(html,/@capten_masin/);
  assert.match(html,/>Verified</);
- assert.match(html,/>Novogamer /);
+ assert.match(html,/title="Verified on Threads"/);
+ assert.equal((html.match(/>Verified</g) || []).length, 1);
+ assert.doesNotMatch(html,/class="visually-hidden">Verified</);
+ assert.match(html,/>Novogamer</);
+ assert.match(html,/Reconnect to publish/);
+ assert.match(html,/aria-label="Reconnect Expired Page"/);
  assert.match(html,/aria-label="Disconnect capten_masin"/);
  assert.match(html,/aria-label="Disconnect Novogamer"/);
  assert.match(html,/title="Disconnect Novogamer"><svg/);
  assert.doesNotMatch(html,/>Disconnect<|Europe\/London|>connected/);
- assert.match(html,/>Manage posting slots<\/button>/);
- assert.match(html,/>1 posting slot<\/button>/);
+ assert.match(html,/Manage posting slots<\/button>/);
+ assert.match(html,/1 posting slot<\/button>/);
  assert.ok(html.includes('src="https://images.example/profile.jpg"'));
  assert.ok(html.includes('referrerpolicy="no-referrer"'));
  assert.match(html, /aria-label="Novogamer"><svg/);

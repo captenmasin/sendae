@@ -42,6 +42,7 @@ test('scheduling retries keep their request ID and a new confirmed action gets a
  const stored=new Map(), requests=[];
  let fail=true;
  const context=()=>({
+  busy:{value:false}, syncing:{value:false}, syncRequest:null, scheduledLocked:{value:false}, scheduledUpdateErrors:{value:{}},
   act:fn=>fn(), flush:async()=>{}, refresh:async()=>{},
   editor:{value:{id:'draft',version:2}}, scheduleMode:{value:'now'},
   state:{value:{settings:{workspace_id:'workspace'}}},

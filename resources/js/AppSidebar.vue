@@ -18,6 +18,7 @@ const {
     state,
     switchWorkspace,
     syncing,
+    unpublishedDrafts,
 } = useWorkspace();
 </script>
 
@@ -69,8 +70,8 @@ const {
             >
                 <span class="nav-icon"><Icon :name="view.icon" :size="16" /></span>
                 {{ label }}
-                <span v-if="label === 'Posts' || label === 'Queue'" class="count">
-                    {{ label === 'Posts' ? state.drafts.length : queue.length }}
+                <span v-if="label === 'Posts' || label === 'Calendar'" class="count">
+                    {{ label === 'Posts' ? unpublishedDrafts.length : queue.length }}
                 </span>
             </button>
         </nav>

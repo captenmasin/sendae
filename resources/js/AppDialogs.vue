@@ -30,12 +30,14 @@ const {
     scheduleAt,
     scheduleMode,
     scheduleOpen,
+    scheduledLocked,
     selectConnection,
     slots,
     slotsAccount,
     state,
     syncing,
     timezone,
+    unschedule,
     workspaceForm,
     workspaceImagePreview,
 } = useWorkspace();
@@ -102,48 +104,52 @@ const {
             v-modal
             class="modal-backdrop"
             aria-labelledby="workspace-title"
-            @cancel.prevent="workspaceForm = null"
-            @click.self="workspaceForm = null"
+            @cancel.prevent="!busy && (workspaceForm = null)"
+            @click.self="!busy && (workspaceForm = null)"
         >
             <section class="modal">
                 <button
                     class="modal-close"
                     @click="workspaceForm = null"
                     aria-label="Close workspace settings"
+                    :disabled="busy"
                 >
                     ×
                 </button>
                 <h2 id="workspace-title">{{ workspaceForm.id ? 'Edit workspace' : 'New workspace' }}</h2>
                 <form @submit.prevent="saveWorkspace">
+                    <div class="workspace-image-preview">
+                        <img v-if="workspaceImagePreview" :src="workspaceImagePreview" alt="Workspace image preview" />
+                        <WorkspaceAvatar v-else :workspace="{ ...workspaceForm, has_image: false }" :size="48" />
+                        <div class="workspace-image-controls">
+                            <label class="outline workspace-image-upload">
+                                {{ workspaceImagePreview ? 'Change image' : 'Upload image' }}
+                                <input type="file" accept="image/jpeg,image/png,image/webp" :disabled="busy" @change="workspaceForm.imageFile = $event.target.files[0]" />
+                            </label>
+                            <button
+                                v-if="workspaceForm.has_image || workspaceForm.imageFile"
+                                type="button"
+                                class="text-button"
+                                :disabled="busy"
+                                @click="workspaceForm.imageFile = null; workspaceForm.removeImage = true; workspaceForm.has_image = false"
+                            >Remove image</button>
+                        </div>
+                    </div>
                     <label>
-                        Name
+                        Workspace name
                         <input
                             v-model="workspaceForm.name"
                             maxlength="100"
                             required
                             autofocus
+                            :disabled="busy"
                             placeholder="Sitepulse"
                         />
                     </label>
-                    <label>
-                        Image
-                        <input type="file" accept="image/jpeg,image/png,image/webp" @change="workspaceForm.imageFile = $event.target.files[0]" />
-                    </label>
-                    <div class="workspace-image-preview">
-                        <img v-if="workspaceImagePreview" :src="workspaceImagePreview" alt="" />
-                        <WorkspaceAvatar v-else :workspace="{ ...workspaceForm, has_image: false }" :size="48" />
-                        <button
-                            v-if="workspaceForm.has_image || workspaceForm.imageFile"
-                            type="button"
-                            class="text-button"
-                            @click="workspaceForm.imageFile = null; workspaceForm.removeImage = true; workspaceForm.has_image = false"
-                        >
-                            Remove image
-                        </button>
-                    </div>
-                    <p class="muted">Without an image, the workspace uses the first letter of its name.</p>
+                    <p class="muted">JPG, PNG or WebP up to 2 MB. Without an image, your workspace uses its first letter.</p>
+                    <p v-if="error" role="alert" class="error-text">{{ error }}</p>
                     <button class="primary" :disabled="busy || syncing">
-                        {{ workspaceForm.id ? 'Save changes' : 'Create workspace' }}
+                        {{ busy ? 'Saving…' : workspaceForm.id ? 'Save changes' : 'Create workspace' }}
                     </button>
                 </form>
             </section>
@@ -196,6 +202,9 @@ const {
                                 : 'Reschedule unfinished work'
                         }}
                     </button>
+                    <button v-if="canReschedule(recovery)" type="button" class="outline" @click="unschedule(recovery)" :disabled="busy || syncing">
+                        Unschedule
+                    </button>
                 </form>
             </section>
         </dialog>
@@ -211,7 +220,7 @@ const {
                 <button class="modal-close" @click="scheduleOpen = false" aria-label="Close scheduling">
                     ×
                 </button>
-                <h2 id="schedule-title">Schedule post</h2>
+                <h2 id="schedule-title">{{ scheduledLocked ? 'Change date & time' : 'Schedule post' }}</h2>
                 <p v-if="error" class="error-text" role="alert">{{ error }}</p>
                 <p>
                     Selected accounts:
@@ -230,11 +239,13 @@ const {
                         Date & time · {{ Intl.DateTimeFormat().resolvedOptions().timeZone }}
                         <input v-model="scheduleAt" type="datetime-local" required />
                     </label>
-                    <p class="muted">Scheduling requires confirmation from Sendae.</p>
                     <button class="primary" :disabled="busy || !chosen.length">
                         {{
-                            busy ? 'Confirming…' : scheduleMode === 'now' ? 'Publish now' : 'Confirm schedule'
+                            busy ? 'Saving…' : scheduledLocked ? 'Update' : scheduleMode === 'now' ? 'Publish now' : 'Confirm schedule'
                         }}
+                    </button>
+                    <button v-if="scheduledLocked" type="button" class="outline" @click="async () => { await unschedule(); if (!error) scheduleOpen = false; }" :disabled="busy || syncing">
+                        Unschedule
                     </button>
                 </form>
             </section>
@@ -409,3 +420,11 @@ const {
         </section>
     </dialog>
 </template>
+
+<style scoped>
+.workspace-image-controls { display: flex; align-items: center; gap: 14px; }
+.workspace-image-upload { cursor: pointer; position: relative; }
+.workspace-image-upload input { position: absolute; width: 1px; height: 1px; padding: 0; opacity: 0; }
+.workspace-image-upload:focus-within { outline: 2px solid currentColor; outline-offset: 3px; }
+.workspace-image-preview { margin: 0; }
+</style>

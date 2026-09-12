@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\LocalOrOwner;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -23,6 +24,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prependToPriorityList(SubstituteBindings::class, LocalOrOwner::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        $exceptions->render(function (LockTimeoutException $e, Request $r) {
+            return response()->json(['message' => 'Sendae is still syncing. Please try again when syncing finishes.'], 503);
+        });
         $exceptions->render(function (RequestException $e, Request $r) {
             return response()->json(['message' => $e->response->json('message') ?? 'The hosted server could not complete this request.', 'errors' => $e->response->json('errors') ?? []], $e->response->status());
         });

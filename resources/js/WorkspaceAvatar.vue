@@ -22,3 +22,13 @@ const imageSrc = computed(() => {
         <span v-else>{{ letter }}</span>
     </span>
 </template>
+
+<style scoped>
+.workspace-avatar {
+    flex-shrink: 0;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-weight: 600;
+    line-height: 1;
+}
+</style>

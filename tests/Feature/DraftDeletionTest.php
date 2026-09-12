@@ -3,9 +3,11 @@
 namespace Tests\Feature;
 
 use App\Models\Draft;
+use App\Models\Publication;
 use App\Models\Setting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class DraftDeletionTest extends TestCase
@@ -25,12 +27,15 @@ class DraftDeletionTest extends TestCase
         Setting::write('workspace_id', str_repeat('b', 64));
         $this->postJson('/local/deleteDraft', ['id' => $draft->id])->assertNotFound();
         Setting::write('workspace_id', str_repeat('a', 64));
-        Http::fake(['sendae-server.test/api/deleteDraft' => Http::sequence()->push(['message' => 'Sync before deleting.'], 409)->push(['deleted' => true])]);
+        $publication = Publication::create(['draft_id' => $draft->id, 'account_id' => (string) Str::uuid(), 'status' => 'scheduled', 'snapshot' => [], 'scheduled_at' => '2027-01-01 12:00:00']);
+        Http::fake(['sendae-server.test/api/deleteDraft' => Http::sequence()->push(['message' => 'Sync before deleting.'], 409)->push(['deleted' => true, 'cancelled_publication_ids' => [$publication->id]])]);
 
         $this->postJson('/local/deleteDraft', ['id' => $draft->id])->assertConflict();
         $this->assertNotSoftDeleted($draft);
-        $this->postJson('/local/deleteDraft', ['id' => $draft->id])->assertJsonPath('deleted', true);
+        $this->assertSame('scheduled', $publication->fresh()->status);
+        $this->postJson('/local/deleteDraft', ['id' => $draft->id])->assertJsonPath('deleted', true)->assertJsonPath('cancelled_publication_ids.0', $publication->id);
         $this->assertSoftDeleted($draft);
+        $this->assertSame('cancelled', $publication->fresh()->status);
         $this->getJson('/local/state')->assertJsonCount(0, 'drafts');
         Http::assertSent(fn ($request) => $request->url() === 'https://sendae-server.test/api/deleteDraft' && $request['version'] === 2);
     }

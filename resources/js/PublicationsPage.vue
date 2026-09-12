@@ -23,6 +23,7 @@ const {
     reschedule,
     state,
     syncing,
+    unschedule,
 } = useWorkspace();
 
 const view = ref('calendar');
@@ -46,6 +47,17 @@ const publicationsByDay = computed(() => {
     }
     return days;
 });
+function groupPublications(publications) {
+    const groups = new Map();
+    for (const publication of publications) {
+        const key = publication.draft_id
+            ? JSON.stringify([publication.draft_id, new Date(publication.scheduled_at).getTime()])
+            : publication.id;
+        if (!groups.has(key)) groups.set(key, { key, post: publication, publications: [] });
+        groups.get(key).publications.push(publication);
+    }
+    return [...groups.values()];
+}
 const calendarDays = computed(() => {
     const year = month.value.getFullYear();
     const monthIndex = month.value.getMonth();
@@ -57,17 +69,20 @@ const calendarDays = computed(() => {
             date: day,
             key: day.toDateString(),
             outside: day.getMonth() !== monthIndex,
-            publications: publicationsByDay.value.get(day.toDateString()) || [],
+            groups: groupPublications(publicationsByDay.value.get(day.toDateString()) || []),
         };
     });
 });
 const publications = computed(() => {
-    if (page.value !== 'Queue') return history.value;
+    if (page.value !== 'Calendar') return history.value;
     if (view.value === 'calendar' && selectedDay.value) {
         return publicationsByDay.value.get(selectedDay.value.toDateString()) || [];
     }
     return queue.value;
 });
+const publicationGroups = computed(() => page.value === 'Calendar'
+    ? groupPublications(publications.value)
+    : publications.value.map(post => ({ key: post.id, post, publications: [post] })));
 
 function changeMonth(offset) {
     month.value = new Date(month.value.getFullYear(), month.value.getMonth() + offset, 1);
@@ -97,7 +112,7 @@ function startDrag(event, publication) {
 async function dropOnDay(day) {
     const dragged = draggedPost.value;
     clearDrag();
-    if (!dragged || dragged.workspaceId !== state.value.settings.workspace_id || page.value !== 'Queue') return;
+    if (!dragged || dragged.workspaceId !== state.value.settings.workspace_id || page.value !== 'Calendar') return;
     const publication = queue.value.find((p) => p.id === dragged.id);
     if (!publication || busy.value || syncing.value || !canReschedule(publication)) return;
     const original = new Date(publication.scheduled_at);
@@ -110,15 +125,15 @@ async function dropOnDay(day) {
 <template>
     <div class="page-heading publications-heading">
         <div>
-            <h1>{{ page === 'Queue' ? 'Queue' : 'Published' }}</h1>
+            <h1>{{ page === 'Calendar' ? 'Calendar' : 'Published' }}</h1>
         </div>
-        <div v-if="page === 'Queue'" class="schedule-views" role="group" aria-label="Schedule view">
+        <div v-if="page === 'Calendar'" class="schedule-views" role="group" aria-label="Schedule view">
             <button class="outline" :aria-pressed="view === 'calendar'" @click="view = 'calendar'">Calendar</button>
             <button class="outline" :aria-pressed="view === 'list'" @click="view = 'list'">List</button>
         </div>
     </div>
     <section class="content-section">
-        <template v-if="page === 'Queue' && view === 'calendar'">
+        <template v-if="page === 'Calendar' && view === 'calendar'">
             <div class="calendar-toolbar">
                 <div>
                     <h2 id="calendar-month" aria-live="polite">{{ monthLabel }}</h2>
@@ -142,7 +157,7 @@ async function dropOnDay(day) {
                                     class="calendar-day"
                                     :class="{ selected: selectedDay?.toDateString() === day.key, 'drag-over': draggedPost && dragOverDay === day.key }"
                                     role="group"
-                                    :aria-label="dayLabel(day.date) + ', ' + day.publications.length + ' queued posts'"
+                                    :aria-label="dayLabel(day.date) + ', ' + day.groups.length + ' queued posts'"
                                     :aria-current="day.key === new Date().toDateString() ? 'date' : undefined"
                                     @click="selectedDay = day.date"
                                     @dragover.prevent="draggedPost && (dragOverDay = day.key)"
@@ -150,19 +165,41 @@ async function dropOnDay(day) {
                                     @drop.prevent="dropOnDay(day)"
                                 >
                                     <button class="calendar-day-number" :aria-label="dayLabel(day.date)" :aria-pressed="selectedDay?.toDateString() === day.key" @click.stop="selectedDay = day.date">{{ day.date.getDate() }}</button>
-                                    <button
-                                        v-for="p in day.publications.slice(0, 2)" :key="p.id" class="calendar-post"
-                                        :aria-label="'Change date and time for ' + postTitle(p) + ', ' + (accountFor(p)?.name || 'Disconnected account') + ', ' + time(p.scheduled_at)"
-                                        :draggable="canReschedule(p) && !busy && !syncing"
-                                        :disabled="!canReschedule(p) || busy || syncing"
-                                        @click.stop="openRecovery(p)"
-                                        @dragstart="startDrag($event, p)"
-                                        @dragend="clearDrag"
-                                    >
-                                        <span>{{ time(p.scheduled_at) }} · {{ accountFor(p)?.name || 'Disconnected account' }}</span>
-                                        <strong>{{ postTitle(p) }}</strong>
-                                    </button>
-                                    <button v-if="day.publications.length > 2" class="calendar-more" @click.stop="selectedDay = day.date">+{{ day.publications.length - 2 }} more</button>
+                                    <template v-for="group in day.groups" :key="group.key">
+                                        <div v-if="group.publications.length > 1" class="calendar-post calendar-post-group">
+                                            <button class="calendar-post-summary" :aria-label="'Show posts for ' + dayLabel(day.date)" @click.stop="selectedDay = day.date">
+                                                <span>{{ time(group.post.scheduled_at) }}</span>
+                                                <strong>{{ postTitle(group.post) }}</strong>
+                                            </button>
+                                            <div class="calendar-post-accounts" role="group" :aria-label="'Accounts for ' + postTitle(group.post)">
+                                                <button
+                                                    v-for="p in group.publications" :key="p.id"
+                                                    class="calendar-post-account"
+                                                    :title="accountFor(p)?.name || 'Disconnected account'"
+                                                    :aria-label="'Change date and time for ' + postTitle(p) + ', ' + (accountFor(p)?.name || 'Disconnected account') + ', ' + time(p.scheduled_at)"
+                                                    :draggable="canReschedule(p) && !busy && !syncing"
+                                                    :disabled="!canReschedule(p) || busy || syncing"
+                                                    @click.stop="openRecovery(p)"
+                                                    @dragstart="startDrag($event, p)"
+                                                    @dragend="clearDrag"
+                                                >
+                                                    <AccountLogo :provider="accountFor(p)?.provider" :size="16" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <button v-else
+                                            v-for="p in group.publications" :key="p.id" class="calendar-post"
+                                            :aria-label="'Change date and time for ' + postTitle(p) + ', ' + (accountFor(p)?.name || 'Disconnected account') + ', ' + time(p.scheduled_at)"
+                                            :draggable="canReschedule(p) && !busy && !syncing"
+                                            :disabled="!canReschedule(p) || busy || syncing"
+                                            @click.stop="openRecovery(p)"
+                                            @dragstart="startDrag($event, p)"
+                                            @dragend="clearDrag"
+                                        >
+                                            <span>{{ time(p.scheduled_at) }} · {{ accountFor(p)?.name || 'Disconnected account' }}</span>
+                                            <strong>{{ postTitle(p) }}</strong>
+                                        </button>
+                                    </template>
                                 </div>
                             </td>
                         </tr>
@@ -174,65 +211,91 @@ async function dropOnDay(day) {
                 <button v-if="selectedDay" class="text-button" @click="selectedDay = null">Show all queued posts</button>
             </div>
         </template>
-        <div v-for="p in publications" :key="p.id" class="publication-row">
-            <AccountLogo :account="accountFor(p)" :size="42" />
-            <div class="publication-main">
-                <h3>{{ postTitle(p) }}</h3>
-                <p>{{ accountFor(p)?.name || 'Disconnected account' }} · Scheduled: {{ date(p.scheduled_at) }}</p>
-                <p v-if="p.error" class="error-text">{{ p.error }}</p>
-                <div v-if="p.receipts?.length" class="receipt-links">
-                    <small>{{ p.receipts.length }} confirmed post(s)</small>
-                    <template v-for="(id, index) in p.receipts" :key="id">
-                        <a
-                            v-if="postUrl(p, id)"
-                            :href="postUrl(p, id)"
-                            class="outline"
-                            @click.prevent="openPost(p, id)"
-                            @auxclick.middle.prevent="openPost(p, id)"
-                            target="_blank"
-                            rel="noopener"
-                        >
-                            View post{{ p.receipts.length > 1 ? ' ' + (index + 1) : '' }} ↗
-                        </a>
-                        <code v-else>{{ id }}</code>
-                    </template>
+        <div v-for="group in publicationGroups" :key="group.key" :class="{ 'publication-group': group.publications.length > 1 }">
+            <div v-if="group.publications.length > 1" class="publication-group-heading">
+                <div class="publication-main">
+                    <h3>{{ postTitle(group.post) }}</h3>
+                    <p>Scheduled: {{ date(group.post.scheduled_at) }}</p>
+                </div>
+                <div class="publication-networks" role="group" :aria-label="'Accounts for ' + postTitle(group.post)">
+                    <span v-for="p in group.publications" :key="p.id" :title="accountFor(p)?.name || 'Disconnected account'">
+                        <AccountLogo :provider="accountFor(p)?.provider" :size="20" />
+                    </span>
                 </div>
             </div>
-            <span class="tag" :class="p.status">{{ publicationStatus(p) }}</span>
-            <button v-if="canReschedule(p)" class="outline" @click="openRecovery(p)" :disabled="busy || syncing">Change date & time</button>
-            <button
-                v-if="['failed', 'missed', 'uncertain', 'cancelled'].includes(p.status)"
-                class="outline"
-                @click="openRecovery(p)"
-            >
-                Recover
-            </button>
-            <button
-                v-if="p.status === 'cancelled'"
-                class="outline"
-                @click="deletePublication(p)"
-                :disabled="busy"
-            >
-                Delete
-            </button>
-            <button
-                v-if="['scheduled', 'retry', 'failed', 'missed'].includes(p.status)"
-                class="outline"
-                @click="cancel(p)"
-                :disabled="busy"
-            >
-                Cancel
-            </button>
+            <component :is="group.publications.length > 1 ? 'details' : 'div'" class="publication-accounts">
+                <summary v-if="group.publications.length > 1">Manage {{ group.publications.length }} accounts</summary>
+                <div v-for="p in group.publications" :key="p.id" class="publication-row">
+                    <AccountLogo v-if="page === 'Calendar'" :provider="accountFor(p)?.provider" :size="24" />
+                    <AccountLogo v-else :account="accountFor(p)" :size="42" />
+                    <div class="publication-main">
+                        <h3 v-if="group.publications.length === 1">{{ postTitle(p) }}</h3>
+                        <p v-if="group.publications.length > 1">{{ accountFor(p)?.name || 'Disconnected account' }}</p>
+                        <p v-else>{{ accountFor(p)?.name || 'Disconnected account' }} · {{ p.status === 'published' ? 'Published' : 'Scheduled' }}: {{ date(p.published_at || p.scheduled_at) }}</p>
+                        <p v-if="p.error" class="error-text">{{ p.error }}</p>
+                        <div v-if="p.receipts?.length" class="receipt-links">
+                            <small>{{ p.receipts.length }} confirmed post(s)</small>
+                            <template v-for="(id, index) in p.receipts" :key="id">
+                                <a
+                                    v-if="postUrl(p, id)"
+                                    :href="postUrl(p, id)"
+                                    class="outline"
+                                    @click.prevent="openPost(p, id)"
+                                    @auxclick.middle.prevent="openPost(p, id)"
+                                    target="_blank"
+                                    rel="noopener"
+                                >
+                                    View post{{ p.receipts.length > 1 ? ' ' + (index + 1) : '' }} ↗
+                                </a>
+                                <code v-else>{{ id }}</code>
+                            </template>
+                        </div>
+                    </div>
+                    <span class="tag" :class="p.status">{{ publicationStatus(p) }}</span>
+                    <button v-if="canReschedule(p)" class="outline" @click="openRecovery(p)" :disabled="busy || syncing">Change date & time</button>
+                    <button
+                        v-if="['failed', 'missed', 'uncertain', 'cancelled'].includes(p.status)"
+                        class="outline"
+                        @click="openRecovery(p)"
+                    >
+                        Recover
+                    </button>
+                    <button
+                        v-if="p.status === 'cancelled'"
+                        class="outline"
+                        @click="deletePublication(p)"
+                        :disabled="busy"
+                    >
+                        Delete
+                    </button>
+                    <button
+                        v-if="canReschedule(p)"
+                        class="outline"
+                        @click="unschedule(p)"
+                        :disabled="busy || syncing"
+                    >
+                        Unschedule
+                    </button>
+                    <button
+                        v-if="['failed', 'missed'].includes(p.status)"
+                        class="outline"
+                        @click="cancel(p)"
+                        :disabled="busy"
+                    >
+                        Cancel
+                    </button>
+                </div>
+            </component>
         </div>
-        <div v-if="page === 'Queue' && view === 'calendar' && selectedDay && !publications.length" class="empty calendar-empty">
+        <div v-if="page === 'Calendar' && view === 'calendar' && selectedDay && !publications.length" class="empty calendar-empty">
             <p>No queued posts for this day.</p>
         </div>
         <div v-else-if="!publications.length" class="empty">
-            <div class="empty-art"><Icon :name="page === 'Queue' ? 'Clock' : 'ArrowUpRight'" :size="36" /></div>
-            <h2>{{ page === 'Queue' ? 'No queued posts' : 'No publications' }}</h2>
+            <div class="empty-art"><Icon :name="page === 'Calendar' ? 'Clock' : 'ArrowUpRight'" :size="36" /></div>
+            <h2>{{ page === 'Calendar' ? 'No queued posts' : 'No publications' }}</h2>
             <p>
                 {{
-                    page === 'Queue'
+                    page === 'Calendar'
                         ? 'Schedule a draft for a specific time or add it to your weekly queue.'
                         : 'Published posts and failed attempts appear here.'
                 }}
@@ -244,8 +307,13 @@ async function dropOnDay(day) {
 
 <style scoped>
 .publications-heading { flex-wrap: wrap; }
+.publication-group { padding: 24px 0; border-bottom: 1px solid var(--border); }
+.publication-group-heading { display: flex; align-items: center; gap: 20px; }
+.publication-networks { display: flex; flex-wrap: wrap; gap: 10px; }
+.publication-accounts summary { margin-top: 12px; color: var(--muted); cursor: pointer; font-size: 12px; }
+.publication-group .publication-row:last-child { border-bottom: 0; padding-bottom: 0; }
 .schedule-views, .calendar-navigation { display: flex; gap: 6px; }
-.schedule-views [aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: white; }
+.schedule-views [aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .calendar-toolbar, .calendar-agenda-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
 .calendar-toolbar { margin-bottom: 20px; }
 .calendar-toolbar h2 { font-size: 20px; }
@@ -253,26 +321,32 @@ async function dropOnDay(day) {
 .calendar-navigation .outline { min-width: 38px; }
 .calendar-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 .calendar-scroll:focus-visible { outline: 2px solid #c0c0c0; outline-offset: 3px; }
-.schedule-calendar { width: 100%; min-width: 630px; table-layout: fixed; border-collapse: collapse; background: white; }
+.schedule-calendar { width: 100%; min-width: 630px; table-layout: fixed; border-collapse: collapse; background: var(--surface); }
 .schedule-calendar th { padding: 12px; text-align: left; font-size: 11px; font-weight: 500; color: var(--muted); background: var(--paper); }
 .schedule-calendar td { padding: 0; vertical-align: top; border-top: 1px solid var(--border); border-right: 1px solid var(--border); }
 .schedule-calendar td:last-child { border-right: 0; }
 .calendar-day { width: 100%; min-height: 140px; padding: 10px; display: flex; flex-direction: column; gap: 7px; text-align: left; }
 .calendar-day:hover { background: var(--paper); }
-.calendar-day.selected, .calendar-day.drag-over { background: #ededed; box-shadow: inset 0 0 0 1px #888; }
+.calendar-day.selected, .calendar-day.drag-over { background: var(--selected); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .calendar-day:focus-visible { outline-offset: -3px; }
 .calendar-day-number { display: grid; place-items: center; width: 25px; height: 25px; font-size: 12px; border-radius: 50%; }
-.calendar-day[aria-current="date"] .calendar-day-number { background: var(--accent); color: white; }
+.calendar-day[aria-current="date"] .calendar-day-number { background: var(--accent); color: var(--on-accent); }
 .outside-month { background: var(--paper); }
 .outside-month .calendar-day-number { color: var(--muted); }
 .calendar-post { display: grid; gap: 3px; width: 100%; border-left: 2px solid #aaa; padding: 4px 0 4px 6px; text-align: left; border-radius: 3px; }
-.calendar-post:hover:not(:disabled) { background: #e5e5e5; }
+.calendar-post:hover:not(:disabled) { background: var(--hover); }
 .calendar-post[draggable="true"] { cursor: grab; }
 .calendar-post[draggable="true"]:active { cursor: grabbing; }
 .calendar-post:disabled { cursor: default; }
 .calendar-post span, .calendar-post strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.calendar-post span, .calendar-more { color: var(--muted); font-size: 10px; }
+.calendar-post span { color: var(--muted); font-size: 10px; }
 .calendar-post strong { font-size: 11px; font-weight: 500; }
+.calendar-post-summary { display: grid; gap: 3px; min-width: 0; text-align: left; }
+.calendar-post .calendar-post-accounts { display: flex; flex-wrap: wrap; gap: 4px; }
+.calendar-post-account { display: grid; place-items: center; padding: 3px; border-radius: 4px; }
+.calendar-post-account:hover:not(:disabled) { background: var(--hover); }
+.calendar-post-account[draggable="true"] { cursor: grab; }
+.calendar-post-account[draggable="true"]:active { cursor: grabbing; }
 .calendar-agenda-heading { margin-top: 28px; }
 .calendar-agenda-heading h2 { font-size: 16px; letter-spacing: 0; }
 .calendar-agenda-heading .text-button { font-size: 11px; }

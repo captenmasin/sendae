@@ -34,7 +34,7 @@ async function calendar(publications = []) {
             workspace.authenticated.value = true;
             workspace.state.value.publications = publications;
             workspace.state.value.accounts = [{ id: 'account', provider: 'threads', name: 'Sendae' }];
-            workspace.page.value = 'Queue';
+            workspace.page.value = 'Calendar';
             Vue.provide(Workspace.workspaceKey, workspace);
             return () => [
                 Vue.h({ setup() { render = Page.setup({}, { expose() {} }); return render; } }),
@@ -56,7 +56,7 @@ async function calendar(publications = []) {
 
 const post = (id, scheduled_at, status = 'scheduled') => ({ id, account_id: 'account', scheduled_at, status, snapshot: { title: id } });
 
-test('calendar groups queued posts by local day, shows overflow, and selects all posts for a day', async t => {
+test('calendar shows every queued post in its local day and selects all posts for a day', async t => {
     t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-08-31T12:00:00Z') });
     const app = await calendar([
         post('Later post', '2026-08-31T14:00:00Z'),
@@ -78,8 +78,14 @@ test('calendar groups queued posts by local day, shows overflow, and selects all
     const dayHtml = await renderToString(Vue.createSSRApp({ render: () => today }));
     assert.match(dayHtml, /Across UTC midnight/);
     assert.match(dayHtml, /Retry post/);
-    assert.match(dayHtml, /\+2 more/);
-    assert.doesNotMatch(dayHtml, /Published post|Cancelled post|Later post/);
+    assert.match(dayHtml, /Publishing post/);
+    assert.match(dayHtml, /Later post/);
+    assert.doesNotMatch(dayHtml, /Published post|Cancelled post|Other day|Invalid date|Missing date/);
+    const dayPosts = nodes(today).filter(node => node?.props?.class === 'calendar-post');
+    assert.equal(dayPosts.length, 4);
+    dayPosts.at(-1).props.onClick({ stopPropagation() {} });
+    assert.equal(app.workspace.recovery.value.id, 'Later post');
+    app.workspace.recovery.value = null;
     assert.match(await app.html(), /Times in Europe\/London/);
 
     today.props.onClick();
@@ -97,17 +103,83 @@ test('calendar groups queued posts by local day, shows overflow, and selects all
     const originalDocument = globalThis.document;
     globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
     t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
-    await app.button('Cancel').props.onClick();
+    await app.button('Unschedule').props.onClick();
     assert.equal(cancelled[0].url, '/local/cancel');
-    assert.deepEqual(JSON.parse(cancelled[0].body), { id: 'Across UTC midnight' });
+    assert.deepEqual(JSON.parse(cancelled[0].body), { id: 'Across UTC midnight', separate: true });
     html = await app.html();
     assert.match(html, /No queued posts for this day/);
     assert.equal(app.days().find(day => day.props['aria-current'] === 'date').props['aria-label'].endsWith('0 queued posts'), true);
 });
 
-test('dragging changes only the selected publication day and preserves local time across daylight saving', async t => {
+test('calendar combines accounts for the same draft and time while keeping separate schedules distinct', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-21T08:00:00Z') });
+    const shared = Array.from({ length: 5 }, (_, index) => ({
+        ...post('publication-' + index, '2026-09-21T10:14:00Z'),
+        draft_id: 'shared-draft', account_id: 'account-' + index, snapshot: { title: 'Shared post' },
+    }));
+    const app = await calendar([
+        ...shared,
+        { ...shared[0], id: 'later', scheduled_at: '2026-09-21T14:00:00Z' },
+        { ...shared[0], id: 'separate', draft_id: 'another-draft' },
+        { ...shared[0], id: 'legacy-one', draft_id: null },
+        { ...shared[0], id: 'legacy-two', draft_id: null },
+    ]);
+    app.workspace.state.value.accounts = shared.map((p, index) => ({ id: p.account_id, name: 'Account ' + index, provider: 'threads', avatar_url: 'https://example.com/avatar.png' }));
+    const today = app.days().find(day => day.props['aria-current'] === 'date');
+    assert.match(today.props['aria-label'], /5 queued posts/);
+    const dayHtml = await renderToString(Vue.createSSRApp({ render: () => today }));
+    assert.equal((dayHtml.match(/<strong>Shared post<\/strong>/g) || []).length, 5);
+    const group = nodes(today).find(node => node?.props?.class === 'calendar-post calendar-post-group');
+    const accounts = nodes(group).filter(node => node?.props?.class === 'calendar-post-account');
+    assert.equal(accounts.length, 5);
+    assert.deepEqual(accounts.map(node => node.props.title), ['Account 0', 'Account 1', 'Account 2', 'Account 3', 'Account 4']);
+    const groupHtml = await renderToString(Vue.createSSRApp({ render: () => group }));
+    assert.equal((groupHtml.match(/role="img"/g) || []).length, 5);
+    assert.equal((groupHtml.match(/aria-label="Threads"/g) || []).length, 5);
+    assert.doesNotMatch(groupHtml, /<img/);
+
+    accounts[4].props.onClick({ stopPropagation() {} });
+    assert.equal(app.workspace.recovery.value.id, 'publication-4');
+    app.workspace.state.value.publications[4].status = 'publishing';
+    const locked = app.nodes().find(node => node?.props?.title === 'Account 4');
+    assert.equal(locked.props.disabled, true);
+    assert.equal(locked.props.draggable, false);
+});
+
+test('calendar agenda and list show one heading per scheduled post with network logos and account controls', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-21T08:00:00Z') });
+    const app = await calendar([
+        { ...post('threads-post', '2026-09-21T10:00:00Z'), draft_id: 'draft', snapshot: { title: 'Shared post' } },
+        { ...post('bluesky-post', '2026-09-21T10:00:00Z'), draft_id: 'draft', account_id: 'bluesky', snapshot: { title: 'Shared post' } },
+        { ...post('later-post', '2026-09-22T10:00:00Z'), draft_id: 'draft', snapshot: { title: 'Later schedule' } },
+    ]);
+    app.workspace.state.value.accounts = [
+        { id: 'account', name: 'Threads account', provider: 'threads', avatar_url: 'https://example.com/avatar.png' },
+        { id: 'bluesky', name: 'Bluesky account', provider: 'bluesky', avatar_url: 'https://example.com/avatar.png' },
+    ];
+
+    assert.equal(((await app.html()).match(/<h3>Shared post<\/h3>/g) || []).length, 1);
+    app.days().find(day => day.props['aria-current'] === 'date').props.onClick();
+    assert.doesNotMatch(await app.html(), /<h3>Later schedule<\/h3>/);
+    app.button('List').props.onClick();
+    const html = await app.html();
+    assert.equal((html.match(/<h3>Shared post<\/h3>/g) || []).length, 1);
+    assert.match(html, /<h3>Later schedule<\/h3>/);
+    assert.match(html, /<details[^>]*><summary>Manage 2 accounts<\/summary>/);
+    assert.match(html, /aria-label="Threads"/);
+    assert.match(html, /aria-label="Bluesky"/);
+    assert.doesNotMatch(html, /<img/);
+    const row = app.nodes().find(node => node?.props?.class === 'publication-row' && nodes(node).some(child => child?.children === 'Bluesky account'));
+    nodes(row).find(node => node?.type === 'button' && node.children?.trim?.() === 'Change date & time').props.onClick();
+    assert.equal(app.workspace.recovery.value.id, 'bluesky-post');
+});
+
+test('dragging a grouped account changes only its publication day and preserves local time across daylight saving', async t => {
     t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-20T12:00:00Z') });
-    const app = await calendar([post('Move me', '2026-10-23T08:30:00Z'), post('Keep me', '2026-10-23T09:00:00Z')]);
+    const app = await calendar([
+        { ...post('Move me', '2026-10-23T08:30:00Z'), draft_id: 'shared-draft' },
+        { ...post('Keep me', '2026-10-23T08:30:00Z'), draft_id: 'shared-draft', account_id: 'another-account' },
+    ]);
     const originalDocument = globalThis.document;
     globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
     t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
@@ -130,7 +202,7 @@ test('dragging changes only the selected publication day and preserves local tim
     await target.props.onDrop({ preventDefault() {} });
 
     assert.deepEqual(requests, [{ id: 'Move me', action: 'reschedule', scheduled_at: '2026-10-25T09:30:00.000Z' }]);
-    assert.equal(app.workspace.state.value.publications[1].scheduled_at, '2026-10-23T09:00:00Z');
+    assert.equal(app.workspace.state.value.publications[1].scheduled_at, '2026-10-23T08:30:00Z');
     assert.match(app.days().find(day => day.props['aria-label'].startsWith('Sunday') && day.props['aria-label'].includes('25')).props['aria-label'], /1 queued posts/);
     assert.equal(app.workspace.notice.value, 'Post rescheduled.');
     await target.props.onDrop({ preventDefault() {} });
@@ -254,4 +326,27 @@ test('month navigation handles leap days, year boundaries, empty days, Today and
     app.workspace.page.value = 'Published';
     assert.doesNotMatch(await app.html(), /schedule-calendar|Schedule view/);
     assert.match(await app.html(), /No publications/);
+});
+
+test('the date and time dialog can unschedule without submitting a new date', async t => {
+    const app = await calendar([post('Remove schedule', '2026-10-23T08:30:00Z')]);
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const requests = [];
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        requests.push(url);
+        if (url === '/local/cancel') assert.deepEqual(JSON.parse(options.body), { id: 'Remove schedule', separate: true });
+        return { ok: true, json: async () => ({ ...app.workspace.state.value, publications: [post('Remove schedule', '2026-10-23T08:30:00Z', 'cancelled')] }) };
+    });
+    app.workspace.openRecovery(app.workspace.state.value.publications[0]);
+    app.workspace.recoveryAt.value = '';
+    const button = (await app.dialogNodes()).find(node => node?.type === 'button' && node.children?.trim?.() === 'Unschedule');
+    assert.equal(button.props.type, 'button');
+
+    await button.props.onClick();
+
+    assert.deepEqual(requests, ['/local/cancel', '/local/state']);
+    assert.equal(app.workspace.recovery.value, null);
+    assert.equal(app.workspace.queue.value.length, 0);
 });

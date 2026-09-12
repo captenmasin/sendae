@@ -7,6 +7,7 @@ use App\Models\Draft;
 use App\Models\Media;
 use App\Models\Publication;
 use App\Models\Setting;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
@@ -17,8 +18,11 @@ class Workspace
     {
         app(Synchronizer::class)->requireAuth();
 
-        return ['drafts' => Draft::orderByDesc('updated_at')->get(), 'accounts' => Account::orderBy('name')->get(),
-            'media' => Media::latest()->get(), 'publications' => Publication::orderByDesc('scheduled_at')->get(),
+        $accounts = Account::orderBy('name')->get();
+        $publications = Publication::orderByDesc('scheduled_at')->get();
+
+        return ['drafts' => $this->draftsForEditing($publications, $accounts), 'accounts' => $accounts,
+            'media' => Media::latest()->get(), 'publications' => $publications,
             'settings' => ['workspace_id' => Setting::read('workspace_id'), 'workspaces' => json_decode(Setting::read('workspaces', '[]'), true), 'mode' => 'desktop', 'paired' => app(Synchronizer::class)->signedIn(),
                 'email' => Setting::read('account_email', ''),
                 'name' => Setting::read('account_name', ''),
@@ -28,10 +32,36 @@ class Workspace
 
     }
 
+    private function draftsForEditing(Collection $publications, Collection $accounts): Collection
+    {
+        $queued = $publications->whereIn('status', ['scheduled', 'retry', 'publishing'])->groupBy('draft_id');
+
+        return Draft::withTrashed()->where(function ($query) use ($queued) {
+            $query->whereNull('deleted_at')->orWhereIn('id', $queued->keys());
+        })->orderByDesc('updated_at')->get()->map(function (Draft $draft) use ($queued, $accounts): array {
+            $data = $draft->toArray();
+            if ($draft->trashed()) {
+                $posts = $queued->get($draft->id);
+                $overrides = [];
+                foreach ($posts as $post) {
+                    if ($account = $accounts->firstWhere('id', $post->account_id)) {
+                        $overrides[$account->provider] = $post->snapshot['items'];
+                    }
+                }
+                $data['title'] = $posts->first()->snapshot['title'] ?? '';
+                $data['content'] = ['items' => $posts->first()->snapshot['items'], 'overrides' => (object) $overrides, 'account_ids' => $posts->pluck('account_id')->unique()->values()->all()];
+                $data['restore_scheduled'] = true;
+            }
+
+            return $data;
+        });
+    }
+
     public function save(array $data, bool $sync = false): array
     {
         app(Synchronizer::class)->requireAuth();
         $data = Validator::make($data, [
+            'restore_scheduled' => 'sometimes|boolean',
             'id' => 'required|uuid', 'title' => 'nullable|string|max:200', 'version' => 'required|integer|min:0',
             'content' => 'required|array:items,overrides,account_ids', 'content.items' => 'required|array|min:1|max:30',
             'content.items.*' => 'required|array:text,media_ids', 'content.items.*.text' => 'present|nullable|string|max:65000',
@@ -58,11 +88,16 @@ class Workspace
             }
         }
 
-        abort_if(Draft::onlyTrashed()->whereKey($data['id'])->exists(), 410, 'This draft was deleted.');
+        abort_if(Draft::onlyTrashed()->whereKey($data['id'])->exists() && ! ($data['restore_scheduled'] ?? false), 410, 'This draft was deleted.');
+        abort_if(Publication::where('draft_id', $data['id'])->where('status', 'published')->exists(), 409, 'Published posts cannot be edited. Create a new post instead.');
 
         return $this->once('save', $data, function () use ($data, $sync) {
             $draft = Draft::withTrashed()->lockForUpdate()->find($data['id']);
-            abort_if($draft?->trashed(), 410, 'This draft was deleted.');
+            if ($draft?->trashed()) {
+                $queued = Publication::where('draft_id', $draft->id)->whereIn('status', ['scheduled', 'retry'])->lockForUpdate()->get();
+                abort_unless(($data['restore_scheduled'] ?? false) && $queued->isNotEmpty() && $queued->every(fn ($post) => empty($post->receipts)), 410, 'This draft was deleted.');
+                $draft->restore();
+            }
             $draft ??= new Draft(['id' => $data['id'], 'version' => 0]);
             $draft->fill(['title' => $data['title'], 'content' => $data['content'], 'version' => $draft->version + 1, 'dirty' => ! $sync])->save();
 

@@ -1,6 +1,9 @@
 import {readFileSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {compileIconComposer,installIntoAppBundle,patchElectronBuilder,patchInstallsAppIcon,patchRunCommand,patchSetDockIcon} from './macos-icon.mjs';
 const cwd=new URL('../vendor/nativephp/desktop/resources/electron/',import.meta.url);
+const root=new URL('../',import.meta.url);
 const path=new URL('package.json',cwd);
 const pkg=JSON.parse(readFileSync(path));
 // NativePHP 2.3 ships stale Electron dependencies and omits a compiled plugin file.
@@ -10,6 +13,8 @@ pkg.overrides={...pkg.overrides,'builder-util-runtime':'9.7.0','fast-uri':'3.1.7
 writeFileSync(path,JSON.stringify(pkg,null,2)+'\n');
 execFileSync('npm',['install'],{cwd,stdio:'inherit'});
 execFileSync('node',['node_modules/electron/install.js'],{cwd,stdio:'inherit'});
+const pluginIndex=new URL('electron-plugin/src/index.ts',cwd);
+writeFileSync(pluginIndex,patchSetDockIcon(readFileSync(pluginIndex,'utf8')));
 execFileSync('npm',['run','plugin:build'],{cwd,stdio:'inherit'});
 
 const composerPath=new URL('../composer.json',import.meta.url);
@@ -25,4 +30,14 @@ writeFileSync(notarizePath,notarize);
 const builderPath=new URL('electron-builder.mjs',cwd);
 let builder=readFileSync(builderPath,'utf8');
 if(!builder.includes('hardenedRuntime:'))builder=builder.replace('mac: {',"mac: {\n        hardenedRuntime: process.env.CSC_IDENTITY_AUTO_DISCOVERY !== 'false',");
-writeFileSync(builderPath,builder);
+// NativePHP 2.3 only copies png/ico/icns; electron-builder 26 can compile Icon Composer .icon assets.
+writeFileSync(builderPath,patchElectronBuilder(builder));
+
+const iconTraitPath=new URL('../../src/Drivers/Electron/Traits/InstallsAppIcon.php',cwd);
+writeFileSync(iconTraitPath,patchInstallsAppIcon(readFileSync(iconTraitPath,'utf8')));
+const runCommandPath=new URL('../../src/Drivers/Electron/Commands/RunCommand.php',cwd);
+writeFileSync(runCommandPath,patchRunCommand(readFileSync(runCommandPath,'utf8')));
+const icns=fileURLToPath(new URL('public/icon.icns',root));
+const car=fileURLToPath(new URL('resources/macos/Assets.car',root));
+compileIconComposer(fileURLToPath(new URL('public/icon.icon',root)),{icns,car});
+installIntoAppBundle(fileURLToPath(new URL('vendor/nativephp/desktop/resources/electron/node_modules/electron/dist/Electron.app',root)),{icns,car});

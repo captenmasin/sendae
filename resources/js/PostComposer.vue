@@ -1,12 +1,14 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import AccountLogo from './AccountLogo.vue';
 import Icon from './Icon.vue';
+import NetworkPostPreview from './NetworkPostPreview.vue';
 import { useWorkspace } from './workspace.js';
+
+const vModal = { mounted: (el) => el.showModal(), beforeUnmount: (el) => el.close() };
 
 const {
     addPost,
-    allowScheduledEdit,
     attachment,
     busy,
     changed,
@@ -24,56 +26,38 @@ const {
     postTitle,
     previewItemsFor,
     previewOpen,
-    publicationStatuses,
     removeMedia,
     removePost,
     resetOverride,
     saving,
     schedule,
-    scheduleOpen,
     scheduledLocked,
+    scheduledUpdateError,
+    openSchedule,
     sharedOverrideWarning,
     state,
     syncing,
-    unlockScheduledEdit,
     upload,
 } = useWorkspace();
 const postName = computed({
     get: () => customTitle(editor.value),
     set: (value) => { editor.value.title = value; },
 });
-const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value);
+const previewAccountId = ref(null);
+const previewAccounts = computed(() => chosen.value.length ? chosen.value : [{ name: 'Your account', provider: network.value === 'shared' ? 'x' : network.value }]);
+const previewAccount = computed(() => previewAccounts.value.find((account) => account.id === previewAccountId.value)
+    || previewAccounts.value.find((account) => account.provider === network.value) || previewAccounts.value[0]);
 </script>
 
 <template>
     <fieldset v-if="editor" class="composer" :disabled="busy">
-        <div class="composer-top">
-            <span>{{ pending && !saving ? 'Unsaved changes' : '' }}</span>
+        <div class="composer-heading">
+            <label for="post-name" class="post-name-label">Title</label>
+            <span v-if="pending && !saving" class="composer-save-status">Unsaved changes</span>
             <button class="icon-button" @click="closeDraft" aria-label="Close composer">
                 <Icon name="X" :size="18" />
             </button>
         </div>
-        <div v-if="publicationStatuses[editor.id]" class="draft-statuses draft-publications" role="status">
-            <small>Publications</small>
-            <span
-                v-for="(count, status) in publicationStatuses[editor.id]"
-                :key="status"
-                class="tag"
-                :class="status"
-            >
-                {{ status.charAt(0).toUpperCase() + status.slice(1) }} · {{ count }}
-            </span>
-        </div>
-        <div v-if="scheduledLocked" class="composer-alert" role="status">
-            <p>
-                This post is already scheduled. Editing the draft does not change queued publications unless you
-                cancel and schedule again.
-            </p>
-            <button v-if="!allowScheduledEdit" class="outline" type="button" @click="unlockScheduledEdit">
-                Edit draft anyway
-            </button>
-        </div>
-        <label for="post-name" class="post-name-label">Title</label>
         <input
             id="post-name"
             class="title-input"
@@ -83,19 +67,23 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
             maxlength="200"
             :placeholder="postTitle({ content: editor.content })"
             title="Leave blank to use the opening words of your post. This name is not published."
-            :readonly="locked"
         />
-        <div class="destinations-heading">Publish to</div>
+        <div v-if="scheduledUpdateError" class="override-note mb-3" role="alert">
+            <span>Draft saved. The scheduled post could not be updated: {{ scheduledUpdateError }}</span>
+            <button class="text-button" @click="page = 'Accounts'">Manage accounts</button>
+            <button class="text-button" @click="schedule('preserve')" :disabled="busy || syncing || saving">Retry update</button>
+        </div>
         <div class="destinations">
             <label
-                v-for="a in state.accounts.filter((a) => a.status === 'connected')"
+                v-for="a in state.accounts.filter((a) => a.status === 'connected' || editor.content.account_ids.includes(a.id))"
                 :key="a.id"
                 class="destination"
                 :class="{ checked: editor.content.account_ids.includes(a.id) }"
             >
-                <input type="checkbox" :value="a.id" v-model="editor.content.account_ids" @change="changed" :disabled="locked" />
+                <input type="checkbox" :value="a.id" v-model="editor.content.account_ids" @change="changed" />
                 <AccountLogo :provider="a.provider" :size="14" />
                 {{ a.name }}
+                <small v-if="a.status !== 'connected'">Reconnect required</small>
                 <Icon v-if="a.verified" name="BadgeCheck" :size="12" />
             </label>
             <button
@@ -119,13 +107,16 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
                 <AccountLogo :provider="key" :size="14" /> {{ names[key] }}
                 <i v-if="editor.content.overrides[key]">•</i>
             </button>
+            <button class="text-button preview-toggle" @click="previewOpen = true" aria-haspopup="dialog">
+                Show post preview
+            </button>
         </div>
         <div v-if="network !== 'shared'" class="override-note">
             Only {{ names[network] }} uses this version.
             <button class="text-button" @click="resetOverride">Use shared draft</button>
         </div>
         <div v-else-if="sharedOverrideWarning" class="override-note" role="status">{{ sharedOverrideWarning }}</div>
-        <div class="post-editor" v-for="(item, index) in items" :key="index">
+        <div class="post-editor" v-for="(item, index) in items" :key="network + ':' + index">
             <div class="post-number">
                 <span>{{ String(index + 1).padStart(2, '0') }}</span>
                 <button
@@ -133,7 +124,6 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
                     class="text-button"
                     @click="removePost(index)"
                     :aria-label="'Remove post ' + (index + 1)"
-                    :disabled="locked"
                 >
                     Remove
                 </button>
@@ -143,9 +133,8 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
                 v-model="item.text"
                 @input="changed"
                 placeholder="What’s on your mind?"
-                rows="7"
-                :readonly="locked"
-            ></textarea>
+                rows="5"
+                ></textarea>
             <div class="attachments">
                 <div v-for="id in item.media_ids" :key="id" class="attachment">
                     <video
@@ -154,7 +143,7 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
                         controls
                     ></video>
                     <img v-else :src="'/local/media/' + id" :alt="attachment(id)?.name || 'Attachment'" />
-                    <button @click="removeMedia(item, id)" aria-label="Remove attachment" :disabled="locked">
+                    <button @click="removeMedia(item, id)" aria-label="Remove attachment">
                         <Icon name="X" :size="12" />
                     </button>
                 </div>
@@ -168,7 +157,7 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
                         multiple
                         accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime"
                         @change="upload($event, index)"
-                        :disabled="busy || locked"
+                        :disabled="busy"
                     />
                 </label>
                 <span>{{ Array.from(item.text).length }} characters</span>
@@ -178,52 +167,40 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
             v-if="network === 'shared' || ['x', 'threads', 'bluesky'].includes(network)"
             class="add-post"
             @click="addPost"
-            :disabled="locked"
         >
             <Icon name="Plus" :size="14" /> Add to thread
         </button>
-        <div class="preview">
-            <button class="text-button" @click="previewOpen = !previewOpen" :aria-expanded="previewOpen">
-                {{ previewOpen ? 'Hide preview' : 'Show realistic preview' }}
-            </button>
-            <div v-if="previewOpen" class="preview-stack">
-                <article
-                    v-for="account in chosen.length ? chosen : [{ name: 'Preview', provider: network === 'shared' ? 'x' : network }]"
-                    :key="account.id || account.provider"
-                    class="social-preview"
-                    :data-provider="account.provider"
-                >
-                    <header>
-                        <AccountLogo :account="account.id ? account : null" :provider="account.provider" :size="36" />
-                        <div>
-                            <strong>
-                                {{ account.name }}
-                                <Icon v-if="account.verified" name="BadgeCheck" :size="14" />
-                            </strong>
-                            <small>{{ names[account.provider] || 'Shared' }} · Preview</small>
-                        </div>
-                    </header>
-                    <div v-for="(item, index) in previewItemsFor(account)" :key="index" class="preview-item">
-                        <p>{{ item.text || ' ' }}</p>
-                        <div v-if="item.media_ids?.length" class="preview-media">
-                            <template v-for="id in item.media_ids" :key="id">
-                                <video v-if="attachment(id)?.mime.startsWith('video/')" :src="'/local/media/' + id" controls></video>
-                                <img v-else :src="'/local/media/' + id" :alt="attachment(id)?.name || 'Attachment'" />
-                            </template>
-                        </div>
-                    </div>
-                </article>
+        <dialog v-if="previewOpen" v-modal class="modal-backdrop" aria-labelledby="post-preview-title"
+            @cancel.prevent="previewOpen = false" @click.self="previewOpen = false">
+            <section class="modal post-preview-modal">
+                <button class="modal-close" @click="previewOpen = false" aria-label="Close post preview">×</button>
+                <h2 id="post-preview-title">Post preview</h2>
+            <div class="preview-stack">
+                <div class="preview-accounts" aria-label="Preview account">
+                    <button v-for="account in previewAccounts" :key="account.id || account.provider"
+                        :aria-pressed="account === previewAccount"
+                        @click="previewAccountId = account.id">
+                        <AccountLogo :provider="account.provider" :size="14" />
+                        <span>{{ names[account.provider] }}<small v-if="previewAccounts.length > 1"> · {{ account.name }}</small></span>
+                    </button>
+                </div>
+                <NetworkPostPreview :key="previewAccount.id || previewAccount.provider" :account="previewAccount"
+                    :items="previewItemsFor(previewAccount)" :media="state.media" />
             </div>
-        </div>
+            </section>
+        </dialog>
         <footer class="composer-footer">
-            <button class="text-button" @click="deleteDraft" :disabled="busy || saving || syncing">
+            <button class="text-button" @click="deleteDraft" :disabled="busy || syncing">
                 Delete post
             </button>
             <div class="composer-actions">
-                <button class="outline" @click="schedule('now')" :disabled="busy || saving || !chosen.length || locked">
+                <button class="outline" @click="schedule('now')" :disabled="busy || !chosen.length">
                     Post now
                 </button>
-                <button class="primary" @click="scheduleOpen = true" :disabled="busy || saving || locked">
+                <button v-if="scheduledLocked" class="outline" @click="openSchedule" :disabled="busy">
+                    Change date &amp; time
+                </button>
+                <button v-else class="primary" @click="openSchedule" :disabled="busy || syncing">
                     Schedule
                     <Icon name="ArrowUpRight" :size="14" />
                 </button>
@@ -233,6 +210,16 @@ const locked = computed(() => scheduledLocked.value && !allowScheduledEdit.value
 </template>
 
 <style scoped>
-.post-name-label { color: var(--muted); font-size: 11px; margin: 0 0 4px; }
+.post-preview-modal { width: 600px; }
+.preview-toggle { margin-left: auto; }
+.add-post { display: inline-flex; align-items: center; gap: 7px; }
+.composer-heading { display: flex; align-items: center; gap: 10px; min-height: 28px; margin: 0 0 4px; }
+.composer-heading .icon-button { margin-left: auto; }
+.post-name-label { color: var(--muted); font-size: 11px; margin: 0; }
+.composer-save-status { color: var(--muted); font-size: 11px; }
 .composer-actions { display: flex; align-items: center; gap: 8px; }
+.preview-accounts { display: flex; flex-wrap: wrap; gap: 6px; }
+.preview-accounts button { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 11px; text-align: left; }
+.preview-accounts button[aria-pressed=true] { background: var(--selected, var(--paper)); color: var(--ink, var(--accent)); border-color: var(--border-strong, var(--muted)); }
+.preview-accounts small { font-size: inherit; }
 </style>

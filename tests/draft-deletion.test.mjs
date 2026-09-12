@@ -11,7 +11,7 @@ test('Command-A and Control-A select all posts without taking over text fields, 
   {metaKey:true}, {ctrlKey:true}, {metaKey:true,key:'A'},
   {metaKey:true,tagName:'INPUT',native:true}, {metaKey:true,tagName:'TEXTAREA',native:true},
   {metaKey:true,tagName:'SELECT',native:true}, {metaKey:true,editable:true,native:true},
-  {metaKey:true,dialog:true,native:true}, {metaKey:true,page:'Queue',native:true},
+  {metaKey:true,dialog:true,native:true}, {metaKey:true,menu:true,native:true}, {metaKey:true,page:'Calendar',native:true},
   {metaKey:true,signedOut:true,native:true}, {metaKey:true,altKey:true,native:true},
   {metaKey:true,shiftKey:true,native:true}, {metaKey:true,defaultPrevented:true,native:true},
   {native:true},
@@ -23,7 +23,7 @@ test('Command-A and Control-A select all posts without taking over text fields, 
   });
   let prevented=false;
 
-  keyboard({key:'a',...options,target:{tagName:options.tagName||'BUTTON',isContentEditable:!!options.editable,closest:()=>options.dialog?{}:null},preventDefault:()=>{prevented=true;}});
+  keyboard({key:'a',...options,target:{tagName:options.tagName||'BUTTON',isContentEditable:!!options.editable,closest:selector=>options.dialog || (options.menu && selector.includes('[role="menu"]'))?{}:null},preventDefault:()=>{prevented=true;}});
 
   assert.deepEqual(calls,options.native?[]:[true],JSON.stringify(options));
   assert.equal(prevented,!options.native,JSON.stringify(options));
@@ -39,13 +39,14 @@ test('manual and automatic synchronization wait while deletion is in progress',a
 function deletionContext({fail,confirmed=true,saveFails=false,editorId='first'}={}) {
  const calls=[],prompts=[];
  const context={
+  savePromise:null,
   busy:Vue.ref(false),syncing:Vue.ref(false),notice:Vue.ref(''),error:Vue.ref(''),
   editor:Vue.ref({id:editorId}),pending:Vue.ref(true),workingItems:Vue.ref(null),
-  state:Vue.ref({drafts:['first','second','third'].map(id=>({id})),publications:[{draft_id:'first',status:'scheduled'}]}),
+  state:Vue.ref({drafts:['first','second','third'].map(id=>({id})),publications:[{id:'queued',draft_id:'first',status:'scheduled'},{id:'live',draft_id:'first',status:'published'}]}),
   selectedDraftIds:Vue.ref(['first','second']),
   confirm:message=>{prompts.push(message);return confirmed;},
   flush:async()=>{calls.push('save');if(saveFails)throw new Error('Save failed');},
-  api:async(path,{id})=>{assert.equal(path,'deleteDraft');calls.push(id);if(id===fail)throw new Error('Deletion failed');},
+  api:async(path,{id})=>{assert.equal(path,'deleteDraft');calls.push(id);if(id===fail)throw new Error('Deletion failed');return {cancelled_publication_ids:id==='first'?['queued']:[]};},
  };
  context.act=async fn=>{context.busy.value=true;try{await fn();}catch(e){context.error.value=e.message;}finally{context.busy.value=false;}};
  const actions=runInNewContext(source.slice(source.indexOf('async function deleteDraft()'),source.indexOf('async function newDraft()'))+';({deleteDraft,deleteDrafts})',context);
@@ -55,8 +56,8 @@ function deletionContext({fail,confirmed=true,saveFails=false,editorId='first'}=
 test('Backspace confirms selected post deletion and leaves editing, dialogs and repeated keys alone',async()=>{
  for(const options of [
   {}, {single:true}, {confirmed:true}, {empty:true}, {busy:true}, {syncing:true},
-  {tagName:'INPUT'}, {tagName:'TEXTAREA'}, {tagName:'SELECT'}, {editable:true}, {dialog:true},
-  {page:'Queue'}, {signedOut:true}, {repeat:true}, {metaKey:true}, {ctrlKey:true},
+  {tagName:'INPUT'}, {tagName:'TEXTAREA'}, {tagName:'SELECT'}, {editable:true}, {dialog:true}, {menu:true},
+  {page:'Calendar'}, {signedOut:true}, {repeat:true}, {metaKey:true}, {ctrlKey:true},
   {altKey:true}, {shiftKey:true}, {defaultPrevented:true},
  ]) {
   const result=deletionContext({confirmed:!!options.confirmed});
@@ -67,7 +68,7 @@ test('Backspace confirms selected post deletion and leaves editing, dialogs and 
    ...result,authenticated:Vue.ref(!options.signedOut),page:Vue.ref(options.page||'Posts'),
   });
 
-  await keyboard({key:'Backspace',...options,target:{tagName:options.tagName||'BUTTON',isContentEditable:!!options.editable,closest:()=>options.dialog?{}:null},preventDefault:()=>{}});
+  await keyboard({key:'Backspace',...options,target:{tagName:options.tagName||'BUTTON',isContentEditable:!!options.editable,closest:selector=>options.dialog || (options.menu && selector.includes('[role="menu"]'))?{}:null},preventDefault:()=>{}});
 
   const shouldConfirm=!Object.keys(options).some(key=>!['single','confirmed'].includes(key));
   assert.equal(result.prompts.length,shouldConfirm?1:0,JSON.stringify(options));
@@ -84,9 +85,10 @@ test('bulk deletion deletes only selected posts and closes a deleted composer wi
  assert.deepEqual(result.calls,['first','second']);
  assert.equal(result.prompts.length,1);
  assert.match(result.prompts[0],/Delete 2 selected posts/);
- assert.match(result.prompts[0],/Queued and published posts will stay unchanged/);
+ assert.match(result.prompts[0],/Scheduled posts will be unscheduled/);
  assert.deepEqual(result.state.value.drafts.map(d=>d.id),['third']);
- assert.equal(result.state.value.publications[0].status,'scheduled');
+ assert.equal(result.state.value.publications[0].status,'cancelled');
+ assert.equal(result.state.value.publications[1].status,'published');
  assert.equal(result.editor.value,null);
  assert.equal(result.selectedDraftIds.value.length,0);
  assert.equal(result.notice.value,'2 posts deleted.');
@@ -164,7 +166,7 @@ test('select all follows visible posts and selections clear on workspace, page, 
   assert.equal(selection.allDraftsSelected.value,false);
   await selection.selectAllDrafts({target:{checked:false}});
   assert.equal(selection.selectedDraftIds.value.length,0);
-  for(const change of [()=>context.state.value.settings.workspace_id='two',()=>context.page.value='Queue',()=>context.authenticated.value=false,()=>context.drafts.value=[]]) {
+  for(const change of [()=>context.state.value.settings.workspace_id='two',()=>context.page.value='Calendar',()=>context.authenticated.value=false,()=>context.drafts.value=[]]) {
    selection.selectAllDrafts({target:{checked:true}});
    change();
    await Vue.nextTick();

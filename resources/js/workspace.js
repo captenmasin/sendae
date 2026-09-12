@@ -128,7 +128,10 @@ export function createWorkspace() {
         return 'Scheduled · in ' + duration;
     }
     const pending = ref(false);
+    const scheduledUpdateErrors = ref({});
+    let editorRevision = 0;
     let savePromise = null,
+        syncRequest = null,
         interval,
         countdownTimer;
     async function api(path, data, retried = false) {
@@ -169,6 +172,12 @@ export function createWorkspace() {
         try {
             state.value = await api('state');
             authenticated.value = true;
+            if (editor.value && publicationStatuses.value[editor.value.id]?.published) {
+                editor.value = null;
+                pending.value = false;
+                workingItems.value = null;
+                selectedDraftIds.value = [];
+            }
         } finally {
             loaded.value = true;
         }
@@ -188,8 +197,9 @@ export function createWorkspace() {
         }
     }
     function changed() {
+        editorRevision++;
         if (editor.value && network.value !== 'shared' && !editor.value.content.overrides[network.value] && workingItems.value) {
-            editor.value.content.overrides[network.value] = workingItems.value;
+            editor.value.content.overrides = { ...editor.value.content.overrides, [network.value]: workingItems.value };
             workingItems.value = null;
         }
         pending.value = true;
@@ -206,10 +216,28 @@ export function createWorkspace() {
                     pending.value = false;
                     const payload = clone(editor.value);
                     const result = await api('drafts', payload);
-                    if (editor.value?.id === payload.id) editor.value.version = result.draft.version;
+                    if (editor.value?.id === payload.id) {
+                        editor.value.version = result.draft.version;
+                        if (payload.restore_scheduled) {
+                            delete editor.value.restore_scheduled;
+                            delete editor.value.deleted_at;
+                        }
+                    }
                     const index = state.value.drafts.findIndex((d) => d.id === result.draft.id);
                     if (index < 0) state.value.drafts.unshift(result.draft);
                     else state.value.drafts[index] = result.draft;
+                    if (scheduledLocked.value) {
+                        try {
+                            await sendSchedule({ draft_id: payload.id, version: result.draft.version, mode: 'preserve', update: true }, result.draft);
+                            delete scheduledUpdateErrors.value[payload.id];
+                            await refresh();
+                            if (editor.value?.id === payload.id) {
+                                editor.value.version = state.value.drafts.find((draft) => draft.id === payload.id)?.version ?? result.draft.version;
+                            }
+                        } catch (e) {
+                            scheduledUpdateErrors.value[payload.id] = e.message;
+                        }
+                    }
                 }
             } catch (e) {
                 pending.value = true;
@@ -223,6 +251,10 @@ export function createWorkspace() {
     }
     async function openDraft(draft) {
         if (busy.value || syncing.value) return;
+        if (publicationStatuses.value[draft.id]?.published) {
+            page.value = 'Published';
+            return false;
+        }
         return act(async () => {
             await flush();
             if (editor.value?.id !== draft.id) {
@@ -258,16 +290,23 @@ export function createWorkspace() {
         if (
             !confirm(
                 (ids.length === 1 ? 'Delete this post?' : 'Delete ' + ids.length + ' selected posts?') +
-                    ' Queued and published posts will stay unchanged.',
+                    ' Scheduled posts will be unscheduled. Published posts will stay unchanged.',
             )
         )
             return;
         await act(async () => {
             notice.value = '';
             if (editor.value && !ids.includes(editor.value.id)) await flush();
-            else pending.value = false;
+            else {
+                pending.value = false;
+                await savePromise?.catch(report);
+                pending.value = false;
+            }
             for (const id of ids) {
-                await api('deleteDraft', { id });
+                const result = await api('deleteDraft', { id });
+                for (const publication of state.value.publications) {
+                    if (result.cancelled_publication_ids?.includes(publication.id)) publication.status = 'cancelled';
+                }
                 state.value.drafts = state.value.drafts.filter((d) => d.id !== id);
                 selectedDraftIds.value = selectedDraftIds.value.filter((selected) => selected !== id);
                 if (editor.value?.id === id) {
@@ -303,6 +342,7 @@ export function createWorkspace() {
     const publicationStatuses = computed(() => {
         const statuses = {};
         for (const publication of state.value.publications) {
+            if (publication.status === 'cancelled' && !publication.receipts?.length) continue;
             const counts = (statuses[publication.draft_id] ??= {});
             counts[publication.status] = (counts[publication.status] || 0) + 1;
         }
@@ -344,8 +384,11 @@ export function createWorkspace() {
             : media.length ? 'Media post' : 'New post';
         return preview + ((post?.snapshot?.title ?? post?.title ?? '').match(/(?: \(conflict copy\))+$/)?.[0] || '');
     }
+    const unpublishedDrafts = computed(() =>
+        state.value.drafts.filter((draft) => !publicationStatuses.value[draft.id]?.published),
+    );
     const drafts = computed(() =>
-        state.value.drafts.filter((d) =>
+        unpublishedDrafts.value.filter((d) =>
             (postTitle(d) + ' ' + draftSummary(d.content))
                 .toLowerCase()
                 .includes(search.value.toLowerCase()),
@@ -364,7 +407,7 @@ export function createWorkspace() {
         const key = account?.provider;
         let list = editor.value?.content.items || [];
         if (key && editor.value?.content.overrides[key]) list = editor.value.content.overrides[key];
-        else if (network.value !== 'shared') list = items.value;
+        else if (key === network.value && workingItems.value) list = workingItems.value;
         if (key && ['facebook', 'linkedin', 'linkedin_page'].includes(key))
             list = [{ text: list.map((i) => i.text).join('\n\n'), media_ids: list.flatMap((i) => i.media_ids) }];
         return list;
@@ -381,6 +424,10 @@ export function createWorkspace() {
         const statuses = publicationStatuses.value[editor.value.id] || {};
         return ['scheduled', 'retry', 'publishing'].some((status) => statuses[status]);
     });
+    const scheduledUpdateError = computed(() => scheduledLocked.value ? scheduledUpdateErrors.value[editor.value.id] : '');
+    const canUnscheduleDraft = computed(() => !!editor.value && state.value.publications.some(
+        (publication) => publication.draft_id === editor.value.id && ['scheduled', 'retry'].includes(publication.status),
+    ));
     function unlockScheduledEdit() {
         allowScheduledEdit.value = true;
     }
@@ -499,45 +546,94 @@ export function createWorkspace() {
         syncing.value = true;
         try {
             await flush();
-            await api('sync', {});
-            await refresh();
-            if (editor.value && !pending.value && !saving.value)
-                editor.value = clone(state.value.drafts.find((d) => d.id === editor.value.id) || null);
+            const revision = editorRevision;
+            syncRequest = (async () => {
+                await api('sync', {});
+                await refresh();
+            })();
+            await syncRequest;
+            if (editor.value && !pending.value && !saving.value) {
+                const index = state.value.drafts.findIndex((draft) => draft.id === editor.value.id);
+                if (editorRevision === revision) editor.value = clone(state.value.drafts[index] || null);
+                else if (index >= 0) state.value.drafts[index] = clone(editor.value);
+            }
         } catch (e) {
             if (manual) report(e);
         } finally {
+            syncRequest = null;
             syncing.value = false;
         }
     }
+    function openSchedule() {
+        scheduleMode.value = 'exact';
+        const publication = state.value.publications.find((post) => post.draft_id === editor.value?.id && ['scheduled', 'retry'].includes(post.status));
+        scheduleAt.value = publication?.scheduled_at ? localDateTime(new Date(publication.scheduled_at)) : '';
+        scheduleOpen.value = true;
+    }
     async function schedule(mode = scheduleMode.value) {
+        if (busy.value || syncing.value) return;
+        const updating = scheduledLocked.value;
         await act(async () => {
             notice.value = '';
+            if (editor.value?.restore_scheduled) pending.value = true;
             await flush();
             const payload = {
                 draft_id: editor.value.id,
                 version: editor.value.version,
                 mode,
             };
+            if (updating) payload.update = true;
             if (payload.mode === 'exact') {
                 if (!scheduleAt.value) throw new Error('Choose a date and time.');
                 payload.scheduled_at = new Date(scheduleAt.value).toISOString();
             }
-            const key = 'schedule:' + state.value.settings.workspace_id + ':' + JSON.stringify(payload);
-            payload.request_id = localStorage.getItem(key) || crypto.randomUUID();
-            localStorage.setItem(key, payload.request_id);
-            await api('schedule', payload);
-            localStorage.removeItem(key);
+            await sendSchedule(payload, editor.value);
+            delete scheduledUpdateErrors.value[payload.draft_id];
             scheduleOpen.value = false;
             await refresh();
-            notice.value = payload.mode === 'now' ? 'Post sent for publishing.' : 'Post scheduled.';
-            page.value = 'Queue';
+            if (!updating) {
+                notice.value = payload.mode === 'now' ? 'Post sent for publishing.' : 'Post scheduled.';
+                page.value = payload.mode === 'now' ? 'Calendar' : 'Posts';
+            }
         });
+    }
+    async function sendSchedule(payload, draft) {
+        if (syncRequest) await syncRequest;
+        const key = 'schedule:' + state.value.settings.workspace_id + ':' + JSON.stringify(payload);
+        const request_id = localStorage.getItem(key) || crypto.randomUUID();
+        localStorage.setItem(key, request_id);
+        await api('schedule', { ...payload, request_id, draft_snapshot: JSON.stringify({ title: draft.title, content: draft.content }) });
+        localStorage.removeItem(key);
     }
     async function cancel(p) {
         await act(async () => {
             await api('cancel', { id: p.id });
             await refresh();
             notice.value = 'Publication cancelled.';
+        });
+    }
+    async function unschedule(post = null) {
+        if (!authenticated.value || busy.value || syncing.value) return;
+        const publications = state.value.publications.filter((publication) => post
+            ? publication.id === post.id
+            : editor.value && publication.draft_id === editor.value.id && ['scheduled', 'retry'].includes(publication.status));
+        if (!publications.length) return;
+        await act(async () => {
+            if (publications.some((publication) => !['scheduled', 'retry'].includes(publication.status))) {
+                throw new Error('This post can no longer be unscheduled.');
+            }
+            await flush();
+            try {
+                for (const publication of publications) await api('cancel', { id: publication.id, ...(post ? { separate: true } : {}) });
+            } finally {
+                await refresh();
+                if (post && editor.value && !pending.value) {
+                    editor.value = clone(state.value.drafts.find(draft => draft.id === editor.value.id) || editor.value);
+                    workingItems.value = null;
+                }
+            }
+            if (publications.some((publication) => publication.id === recovery.value?.id)) recovery.value = null;
+            notice.value = publications.length === 1 ? 'Post unscheduled.' : 'Post unscheduled from ' + publications.length + ' destinations.';
         });
     }
     async function deletePublication(p) {
@@ -562,7 +658,9 @@ export function createWorkspace() {
         const form = workspaceForm.value;
         if (!form) return '';
         if (workspaceImageObjectUrl.value) return workspaceImageObjectUrl.value;
-        if (form.has_image && form.id && !form.removeImage) return '/local/workspaceImage/' + form.id;
+        if (form.has_image && form.id && !form.removeImage) {
+            return '/local/workspaceImage/' + form.id + '?v=' + encodeURIComponent(form.updated_at || '');
+        }
         return '';
     });
     watch(
@@ -625,6 +723,32 @@ export function createWorkspace() {
             workspaceForm.value = null;
             if (isNew) await activateWorkspace(workspace.id);
             else await refresh();
+        });
+        await sync();
+    }
+    async function deleteWorkspace() {
+        if (busy.value || syncing.value) return;
+        if ((state.value.settings.workspaces?.length || 0) < 2) {
+            error.value = 'Create another workspace before deleting your only workspace.';
+            return;
+        }
+        if (!confirm('Delete “' + currentWorkspace.value.name + '”? This permanently removes its drafts, scheduled posts, connected accounts and media from Sendae. Published posts stay on their networks.')) return;
+        await act(async () => {
+            await flush();
+            const result = await api('deleteWorkspace', { id: currentWorkspace.value.id });
+            editor.value = null;
+            pending.value = false;
+            workingItems.value = null;
+            network.value = 'shared';
+            workspaceForm.value = null;
+            scheduleOpen.value = false;
+            slotsAccount.value = null;
+            recovery.value = null;
+            blueskyForm.value = null;
+            search.value = '';
+            state.value = { drafts: [], accounts: [], media: [], publications: [], settings: { workspace_id: result.workspace_id, providers: {} } };
+            await refresh();
+            notice.value = 'Workspace deleted.';
         });
         await sync();
     }
@@ -741,8 +865,13 @@ export function createWorkspace() {
             if (localDateTime(at) !== value) {
                 throw new Error('This time does not exist in your timezone. Choose another time.');
             }
+            await flush();
             await api('recover', { id: publication.id, action: 'reschedule', scheduled_at: at.toISOString() });
             await refresh();
+            if (editor.value && !pending.value) {
+                editor.value = clone(state.value.drafts.find(draft => draft.id === editor.value.id) || editor.value);
+                workingItems.value = null;
+            }
             notice.value = 'Post rescheduled.';
             return true;
         });
@@ -959,10 +1088,15 @@ export function createWorkspace() {
     }
     function keyboard(e) {
         if (!authenticated.value) return;
+        if (e.metaKey && e.key === ',' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.defaultPrevented) {
+            e.preventDefault();
+            page.value = 'Settings';
+            return;
+        }
         const postSelectionShortcut =
             !e.defaultPrevented && page.value === 'Posts' &&
             !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName) &&
-            !e.target?.isContentEditable && !e.target?.closest('dialog, [role="dialog"]');
+            !e.target?.isContentEditable && !e.target?.closest('dialog, [role="dialog"], [role="menu"]');
         if (
             postSelectionShortcut && (e.metaKey || e.ctrlKey) &&
             e.key.toLowerCase() === 'a' && !e.altKey && !e.shiftKey
@@ -1108,6 +1242,7 @@ export function createWorkspace() {
         canConnect,
         canReschedule,
         cancel,
+        canUnscheduleDraft,
         changed,
         chooseAuth,
         chosen,
@@ -1124,9 +1259,11 @@ export function createWorkspace() {
         deleteDraft,
         deleteDrafts,
         deletePublication,
+        deleteWorkspace,
         disconnect,
         draftSummary,
         drafts,
+        unpublishedDrafts,
         editSlots,
         editWorkspace,
         editor,
@@ -1182,7 +1319,9 @@ export function createWorkspace() {
         scheduleAt,
         scheduleMode,
         scheduleOpen,
+        openSchedule,
         scheduledLocked,
+        scheduledUpdateError,
         search,
         selectAllDrafts,
         selectDraft,
@@ -1201,6 +1340,7 @@ export function createWorkspace() {
         theme,
         timezone,
         unlockScheduledEdit,
+        unschedule,
         updateProfile,
         upload,
         workspaceForm,

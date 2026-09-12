@@ -11,6 +11,7 @@ use App\Models\Setting;
 use App\Services\Attachments;
 use App\Services\Synchronizer;
 use App\Services\Workspace;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -152,6 +153,49 @@ class WorkspaceTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_sync_lock_timeout_returns_an_actionable_message(): void
+    {
+        $this->partialMock(Synchronizer::class)->shouldReceive('run')->once()->andThrow(new LockTimeoutException);
+
+        $this->postJson('/local/sync')->assertServiceUnavailable()
+            ->assertJsonPath('message', 'Sendae is still syncing. Please try again when syncing finishes.');
+    }
+
+    public function test_scheduling_accepts_version_changes_when_the_saved_content_matches(): void
+    {
+        $draft = $this->draft(items: [['text' => '', 'media_ids' => []]]);
+        $draft->update(['title' => '', 'version' => 7, 'synced_version' => 7, 'dirty' => false]);
+        $remote = ['id' => $draft->id, 'title' => '', 'version' => 8, 'content' => $draft->content];
+        Http::fake([
+            'sendae.example/api/state' => Http::response(['drafts' => [$remote], 'accounts' => [], 'media' => [], 'publications' => []]),
+            'sendae.example/api/schedule' => Http::response(['updated' => true]),
+        ]);
+        $requestId = (string) Str::uuid();
+
+        $this->postJson('/local/schedule', ['draft_id' => $draft->id, 'version' => 2, 'mode' => 'preserve', 'update' => true, 'request_id' => $requestId,
+            'draft_snapshot' => json_encode($draft->only(['title', 'content']), JSON_THROW_ON_ERROR)])
+            ->assertOk()->assertExactJson(['updated' => true]);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://sendae.example/api/schedule'
+            && $request['version'] === 8 && $request['request_id'] === $requestId && ! isset($request['draft_snapshot']));
+    }
+
+    public function test_scheduling_rejects_mismatched_or_invalid_content_without_publishing(): void
+    {
+        $draft = $this->draft();
+        $payload = ['draft_id' => $draft->id, 'version' => $draft->version, 'mode' => 'preserve', 'update' => true];
+        $snapshot = $draft->only(['title', 'content']);
+        $snapshot['content']['items'][0]['text'] = 'Unsaved edit';
+
+        $this->postJson('/local/schedule', $payload + ['draft_snapshot' => json_encode($snapshot, JSON_THROW_ON_ERROR)])
+            ->assertUnprocessable()->assertJsonValidationErrors('content');
+        $this->postJson('/local/schedule', $payload + ['draft_snapshot' => '{invalid'])
+            ->assertUnprocessable()->assertJsonValidationErrors('draft_snapshot');
+
+        Http::assertNothingSent();
+        $this->assertSame('Hello world', $draft->fresh()->content['items'][0]['text']);
+    }
+
     public function test_scheduling_never_silently_uses_a_new_remote_edit(): void
     {
         config(['sendae.mode' => 'desktop']);
@@ -164,7 +208,7 @@ class WorkspaceTest extends TestCase
         $remote = ['id' => $draft->id, 'title' => $draft->title, 'version' => 2, 'content' => $content];
         Http::fake(['sendae.example/api/state' => Http::response(['drafts' => [$remote], 'accounts' => [], 'media' => [], 'publications' => []])]);
         try {
-            app(Synchronizer::class)->remote('schedule', ['draft_id' => $draft->id, 'version' => 1, 'mode' => 'now']);
+            app(Synchronizer::class)->remote('schedule', ['draft_id' => $draft->id, 'version' => 1, 'mode' => 'now', 'draft_snapshot' => json_encode($draft->only(['title', 'content']), JSON_THROW_ON_ERROR)]);
             $this->fail('Must review remote changes first.');
         } catch (ValidationException $e) {
             $this->assertArrayHasKey('conflict', $e->errors());
