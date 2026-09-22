@@ -3,12 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Media;
-use App\Services\Attachments;
-use App\Services\Synchronizer;
 use App\Services\Workspace;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
+use App\Services\Attachments;
+use App\Services\Synchronizer;
 use Native\Desktop\Facades\Shell;
+use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class WorkspaceController extends Controller
@@ -17,6 +17,19 @@ class WorkspaceController extends Controller
     {
         $url = $request->validate(['url' => 'required|string|url:https|max:2048'])['url'];
         abort_unless(in_array(parse_url($url, PHP_URL_HOST), ['bsky.app', 'x.com', 'www.facebook.com', 'www.linkedin.com', 'threads.net', 'www.threads.net', 'threads.com', 'www.threads.com'], true) && ! parse_url($url, PHP_URL_USER), 422, 'Invalid post address.');
+        Shell::openExternal($url);
+
+        return ['opened' => true];
+    }
+
+    public function openLink(Request $request): array
+    {
+        $url = $request->validate(['url' => 'required|string|max:2048'])['url'];
+        abort_unless(in_array($url, [
+            'https://chatgpt.com/#settings/Security',
+            'https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins',
+            'https://claude.ai/new?modal=add-custom-connector#customize/connectors',
+        ], true), 422, 'Invalid link.');
         Shell::openExternal($url);
 
         return ['opened' => true];
@@ -71,6 +84,11 @@ class WorkspaceController extends Controller
     public function schedule(Request $r, Synchronizer $sync)
     {
         return $sync->remote('schedule', $r->all());
+    }
+
+    public function schedulePreview(Request $request, Synchronizer $sync): array
+    {
+        return $sync->remote('schedulePreview', $request->all());
     }
 
     public function cancel(Request $r, Synchronizer $sync)

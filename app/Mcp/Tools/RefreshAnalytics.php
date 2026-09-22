@@ -2,11 +2,11 @@
 
 namespace App\Mcp\Tools;
 
-use App\Services\Synchronizer;
-use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Laravel\Mcp\Request;
 use Laravel\Mcp\Response;
 use Laravel\Mcp\Server\Tool;
+use App\Services\Synchronizer;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
 
 class RefreshAnalytics extends Tool
 {

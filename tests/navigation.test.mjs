@@ -9,6 +9,10 @@ import { renderToString } from '@vue/server-renderer';
 import * as Workspace from '../resources/js/workspace.js';
 import * as LinkPreviews from '../resources/js/linkPreviews.js';
 
+test('remote drafts are pulled on a short interval', () => {
+    assert.equal(Workspace.syncIntervalMs, 5000);
+});
+
 test('Command-comma opens Settings while typing and ignores other modifiers or signed-out sessions', () => {
     const source = readFileSync(new URL('../resources/js/workspace.js', import.meta.url), 'utf8');
     for (const options of [{}, { metaKey: false }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }, { defaultPrevented: true }, { signedOut: true }]) {
@@ -138,6 +142,8 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
             drafts: [draft], accounts: [], media: [],
             publications: [
                 { id: 'queued', draft_id: 'draft', status: 'scheduled', snapshot: { title: 'Queued post' } },
+                { id: 'retrying', draft_id: 'draft', status: 'retry', snapshot: { title: 'Retrying post' } },
+                { id: 'failed', draft_id: 'draft', status: 'failed', snapshot: { title: 'Failed post' } },
                 { id: 'published', draft_id: 'old-draft', status: 'published', snapshot: { title: 'Published post' }, metrics_status: 'available' },
             ],
             settings: { providers: {}, workspace_id: 'personal', workspaces: [{ id: 'personal', name: 'Personal', icon: '◻' }], email: 'person@example.com' },
@@ -169,7 +175,7 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
         const button = findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes(label));
         counts.push(textContent(findNode(button, node => node?.props?.class === 'count')));
     }
-    assert.deepEqual(counts, ['1', '1']);
+    assert.deepEqual(counts, ['1', '3']);
 });
 
 test('refresh restores every selected sidebar page', async t => {
@@ -217,6 +223,10 @@ test('missing, invalid, or inaccessible saved pages keep navigation usable', asy
         assert.match(await app.render(), /<h1>Settings<\/h1>/);
         unmount();
     }
+
+    globalThis.window = { sessionStorage: { getItem: () => 'Needs attention', setItem() {} } };
+    const app = application({ authenticated: true, loaded: true });
+    assert.match(await app.render(), /<h1>Calendar<\/h1>/);
 });
 
 test('authentication screens hide the workspace while password reset remains accessible', async () => {
@@ -298,7 +308,7 @@ test('Post now saves the current draft and publishes immediately without opening
         assert.equal(button().props.disabled, busy || !accounts.length);
         for (const label of ['Schedule', 'Delete post']) {
             const action = findNode(app.nodes.get('PostComposer.vue'), node => node?.type === 'button' && textContent(node).trim() === label);
-            assert.equal(action.props.disabled, busy);
+            assert.equal(action.props.disabled, busy || label === 'Schedule' && !accounts.length);
         }
     }
     await button().props.onClick();
@@ -361,7 +371,7 @@ test('Post now keeps the composer open and reports a failed save before publishi
         requests.push(url);
         return { ok: false, status: 500, json: async () => ({ message: 'Save failed' }) };
     });
-    const app = application({ authenticated: true, loaded: true, pending: true, editor: { id: 'draft', title: 'Post', version: 1, content: { items: [{ text: 'Unsaved edit', media_ids: [] }], overrides: {}, account_ids: [] } } });
+    const app = application({ authenticated: true, loaded: true, pending: true, state: {drafts: [], accounts: [{id: 'account', provider: 'x', status: 'connected'}], media: [], publications: [], settings: {providers: {}}}, editor: { id: 'draft', title: 'Post', version: 1, content: { items: [{ text: 'Unsaved edit', media_ids: [] }], overrides: {}, account_ids: ['account'] } } });
     await app.render();
 
     await app.workspace.schedule('now');
@@ -604,7 +614,9 @@ test('account images appear across the workspace while Posts and Calendar use ne
     }
     app.workspace.page.value = 'Settings';
     app.workspace.connectionForm.value = { accounts: [account], selected: [0], timezone: 'Europe/London' };
-    assert.match(await app.render(), /src="https:\/\/images.example\/account.jpg"/);
+    const connectionDialog = await app.render();
+    assert.match(connectionDialog, /src="https:\/\/images.example\/account.jpg"/);
+    assert.match(connectionDialog, /Connect 1 account/);
 });
 
 test('post list marks only accounts with their own network content and removes the dot after reset', async () => {
@@ -812,6 +824,8 @@ test('activity lists draft and publication events in order', async () => {
     assert.match(html, /<h1>Activity<\/h1>/);
     assert.match(html, /Draft created/);
     assert.match(html, /Published/);
+    assert.match(html, /All activity/);
+    assert.match(html, /All accounts/);
     assert.deepEqual(app.workspace.activity.value.map(event => event.type), ['published', 'updated', 'created']);
 });
 
@@ -867,6 +881,53 @@ test('settings expose workspace management, theme choices and profile editing to
     const dark = findNode(app.nodes.get('SettingsPage.vue'), node => node?.type === 'button' && textContent(node).includes('Dark'));
     assert.equal(dark.props['aria-pressed'], true);
     assert.equal(app.workspace.colorScheme.value, 'dark');
+});
+
+test('settings agents open on Claude and switch guides without leaving Settings', async () => {
+    const app = application({ authenticated: true, loaded: true, page: 'Settings', state: {
+        drafts: [], accounts: [], media: [], publications: [], settings: { providers: {}, workspace_id: 'one', workspaces: [{ id: 'one', name: 'Studio' }], name: 'Ada', email: 'ada@example.com', mcp_url: 'https://sendae.test/mcp' },
+    } });
+    const html = await app.render();
+    const headings = [...html.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g)].map((match) => match[1]);
+    assert.deepEqual(headings, ['Workspace', 'Appearance', 'Account', 'Agents']);
+    assert.match(html, /https:\/\/sendae\.test\/mcp/);
+    assert.match(html, /custom connector/);
+    assert.match(html, /href="https:\/\/claude\.ai\/new\?modal=add-custom-connector#customize\/connectors"/);
+    assert.match(html, /aria-selected="true"[^>]*>[\s\S]*Claude/);
+    assert.doesNotMatch(html, /Developer mode|claude mcp add|chatgpt\.com/);
+
+    findNode(app.nodes.get('SettingsPage.vue'), (node) => node?.type === 'button' && textContent(node).includes('ChatGPT')).props.onClick();
+    const chatgpt = await app.render();
+    assert.match(chatgpt, /Developer mode/);
+    assert.match(chatgpt, /href="https:\/\/chatgpt\.com\/#settings\/Security"/);
+    assert.match(chatgpt, /href="https:\/\/chatgpt\.com\/plugins#settings\/Connectors\?create-connector=true&amp;redirectAfter=%2Fplugins"/);
+    assert.doesNotMatch(chatgpt, /custom connector|claude mcp add|claude\.ai/);
+
+    findNode(app.nodes.get('SettingsPage.vue'), (node) => node?.type === 'button' && textContent(node).includes('MCP')).props.onClick();
+    const mcp = await app.render();
+    assert.match(mcp, /claude mcp add sendae --transport http --url (&quot;|")https:\/\/sendae\.test\/mcp/);
+    assert.match(mcp, /mcpServers/);
+    assert.match(mcp, /https:\/\/sendae\.test\/mcp/);
+    assert.equal(app.workspace.page.value, 'Settings');
+});
+
+test('mcp consent names every workspace and warns when the callback is on this Mac', async () => {
+    const loopback = application({ authenticated: true, loaded: true, authorizationForm: {
+        client: 'Claude Code', scopes: ['mcp:use'], redirect_uri: 'http://localhost:4312/callback', ticket: 'ticket',
+    } });
+    const local = await loopback.render();
+    assert.match(local, /every workspace on this account, including workspaces created later/);
+    assert.match(local, /Publishing will not ask for another approval/);
+    assert.match(local, /This approval returns to an app on this Mac/);
+    assert.doesNotMatch(local, /mcp:use|localhost:4312/);
+
+    const remote = application({ authenticated: true, loaded: true, authorizationForm: {
+        client: 'Claude', scopes: ['mcp:use'], redirect_uri: 'https://claude.ai/api/mcp/auth_callback', ticket: 'ticket',
+    } });
+    const hosted = await remote.render();
+    assert.match(hosted, /every workspace on this account/);
+    assert.match(hosted, /Returns to claude\.ai/);
+    assert.doesNotMatch(hosted, /returns to an app on this Mac|mcp:use|auth_callback/);
 });
 
 test('workspace deletion confirms the target then clears the editor only after server success', async t => {
@@ -931,4 +992,122 @@ test('Unschedule in the schedule dialog returns a scheduled post to a draft', as
     assert.match(html, />Draft</);
     assert.equal(findNode(app.nodes.get('PostComposer.vue'), node => node?.props?.['aria-label'] === 'Post title').props.readonly, undefined);
     assert.equal(app.workspace.editor.value.content.items[0].text, 'Keep this text');
+});
+
+test('mixed-status posts stay editable and expose recovery beside unfinished destinations', async () => {
+    const draft = { id: 'partial', title: 'Partial post', content: { items: [{ text: 'Next copy', media_ids: [] }], overrides: {}, account_ids: ['live', 'queued', 'failed'] } };
+    const accounts = ['live', 'queued', 'failed'].map(id => ({ id, name: id, provider: 'threads', status: 'connected' }));
+    const publications = ['published', 'scheduled', 'failed'].map((status, index) => ({ id: status, account_id: accounts[index].id, draft_id: draft.id, status, snapshot: { title: draft.title, items: draft.content.items }, receipts: [] }));
+    const state = { drafts: [draft], accounts, publications, media: [], settings: { providers: {} } };
+    const app = application({ authenticated: true, loaded: true, state });
+    await app.render();
+    await app.workspace.openDraft(draft);
+    let html = await app.render();
+    assert.match(html, /Published · unchanged/);
+    assert.match(html, /Recover destination/);
+    assert.equal(app.workspace.editor.value.id, draft.id);
+    assert.deepEqual(app.workspace.destinationChecks.value.map(check => check.account.id), ['queued']);
+    app.workspace.page.value = 'Calendar';
+    await app.render();
+    findNode(app.nodes.get('PublicationsPage.vue'), node => node?.type === 'button' && textContent(node).includes('Attention')).props.onClick();
+    html = await app.render();
+    assert.match(html, /Partial post/);
+    assert.equal(app.workspace.needsAttention.value.length, 1);
+    app.workspace.state.value.publications[1].status = 'failed';
+    assert.equal(app.workspace.scheduleBlocked.value, true, 'Recover unfinished work without resending the completed destination');
+    assert.doesNotMatch(textContent(app.nodes.get('PublicationsPage.vue')), /Published · unchanged/);
+});
+
+test('destination checks track overrides, flattened networks, graphemes, URLs and media before scheduling', async () => {
+    const accounts = ['x', 'bluesky', 'threads', 'linkedin'].map(id => ({ id, provider: id, name: id, status: 'connected' }));
+    const draft = { id: 'draft', title: 'Validation draft', content: { items: [{ text: 'a'.repeat(281), media_ids: [] }], overrides: {}, account_ids: accounts.map(a => a.id) } };
+    const app = application({ authenticated: true, loaded: true, editor: draft, state: { drafts: [draft], accounts, media: [], publications: [], settings: { providers: {} } } });
+    let html = await app.render();
+    assert.match(html, /Shorten by 1 characters/);
+    assert.doesNotMatch(html, /281 \/ 280 characters|281 characters/);
+    assert.equal(app.workspace.scheduleBlocked.value, true);
+    app.workspace.editor.value.content.overrides.x = [{ text: 'https://example.com/' + 'a'.repeat(400), media_ids: [] }];
+    app.workspace.editor.value.content.overrides.bluesky = [{ text: '👨‍👩‍👧‍👦'.repeat(100), media_ids: [] }];
+    assert.equal(app.workspace.destinationChecks.value[0].items[0].length, 23);
+    assert.equal(app.workspace.destinationChecks.value[1].items[0].length, 100);
+    assert.equal(app.workspace.scheduleBlocked.value, false);
+    app.workspace.editor.value.content.items = [{ text: 'a'.repeat(1600), media_ids: [] }, { text: 'b'.repeat(1600), media_ids: [] }];
+    assert.equal(app.workspace.destinationChecks.value[3].items[0].length, 3202);
+    assert.equal(app.workspace.scheduleBlocked.value, true);
+    app.workspace.state.value.media = [{ id: 'video', mime: 'video/mp4', size: 1000 }];
+    app.workspace.editor.value.content.overrides.bluesky[0].media_ids = ['video'];
+    html = await app.render();
+    assert.match(html, /Video is not supported/);
+    app.workspace.state.value.accounts[0].status = 'expired';
+    assert.match(await app.render(), /Reconnect this account/);
+});
+
+test('background sync failure remains visible until a successful retry', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const state = { drafts: [], accounts: [], media: [], publications: [], settings: { paired: true, providers: {} } };
+    const app = application({ authenticated: true, loaded: true, state });
+    await app.render();
+    let failed = true;
+    t.mock.method(globalThis, 'fetch', async url => {
+        if (failed) throw new Error('Connection unavailable');
+        return { ok: true, json: async () => url === '/local/state' ? state : {} };
+    });
+    await app.workspace.sync(false);
+    const html = await app.render();
+    assert.match(html, /Connection unavailable/);
+    assert.match(html, /Retry sync/);
+    assert.equal(app.workspace.error.value, '');
+    failed = false;
+    await app.workspace.sync(false);
+    assert.equal(app.workspace.syncError.value, '');
+    assert.ok(app.workspace.lastSyncedAt.value);
+    assert.equal(app.workspace.notice.value, '');
+    assert.doesNotMatch(await app.render(), /Retry sync/);
+    app.workspace.state.value.drafts.push({ id: 'local', dirty: true, content: { items: [], overrides: {}, account_ids: [] } });
+    assert.equal(app.workspace.syncStatus.value, 'Changes waiting to sync');
+});
+
+test('metric refresh keeps unrelated workspace actions available', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const publication = { id: 'publication', status: 'published', snapshot: { title: 'Published post' } };
+    const state = { drafts: [], accounts: [], media: [], publications: [publication], settings: { providers: {} } };
+    const app = application({ authenticated: true, loaded: true, state });
+    let complete;
+    t.mock.method(globalThis, 'fetch', (url) => {
+        if (url === '/local/analytics') return new Promise((resolve) => { complete = resolve; });
+        return Promise.resolve({ ok: true, json: async () => state });
+    });
+
+    await app.render();
+    const refresh = app.workspace.refreshMetrics(publication);
+    assert.equal(app.workspace.busy.value, false);
+    assert.equal(app.workspace.isRefreshingMetric(publication), true);
+    complete({ ok: true, json: async () => ({}) });
+    await refresh;
+    assert.equal(app.workspace.isRefreshingMetric(publication), false);
+});
+
+test('duplicate workspace names include a stable suffix in the selector', async () => {
+    const app = application({
+        authenticated: true,
+        loaded: true,
+        state: {
+            drafts: [], accounts: [], media: [], publications: [],
+            settings: {
+                providers: {}, workspace_id: 'workspace-aaaaaa',
+                workspaces: [
+                    { id: 'workspace-aaaaaa', name: 'Personal' },
+                    { id: 'workspace-bbbbbb', name: 'Personal' },
+                ],
+            },
+        },
+    });
+
+    const html = await app.render();
+    assert.match(html, /Personal · aaaaaa/);
+    assert.match(html, /Personal · bbbbbb/);
 });

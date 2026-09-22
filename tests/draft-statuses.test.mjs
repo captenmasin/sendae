@@ -9,18 +9,18 @@ import { renderToString } from '@vue/server-renderer';
 const source=readFileSync(new URL('../resources/js/workspace.js',import.meta.url),'utf8');
 const view=readFileSync(new URL('../resources/js/PostsPage.vue',import.meta.url),'utf8');
 const composer=readFileSync(new URL('../resources/js/PostComposer.vue',import.meta.url),'utf8');
-const template=view.slice(view.indexOf('<template>')+10,view.lastIndexOf('</template>')).replace('<PostComposer v-if="editor && !publicationStatuses[editor.id]?.published" />','<template v-if="editor && !publicationStatuses[editor.id]?.published">'+composer.slice(composer.indexOf('<template>')+10,composer.lastIndexOf('</template>'))+'</template>');
+const template=view.slice(view.indexOf('<template>')+10,view.lastIndexOf('</template>')).replace('<PostComposer v-if="editor && !isFullyPublished(editor.id)" />','<template v-if="editor && !isFullyPublished(editor.id)">'+composer.slice(composer.indexOf('<template>')+10,composer.lastIndexOf('</template>'))+'</template>');
 const render=new Function('Vue',compile(template,{mode:'function',prefixIdentifiers:true}).code)(Vue);
 
 async function renderDraft(publications,{title='My draft',editorOpen=false,query='',posts,selected=[],busy=false}={}) {
  const draft={id:'draft',title,content:{items:[{text:'Hello',media_ids:[]}],account_ids:[],overrides:{}}};
  const state=Vue.ref({drafts:posts||[draft],accounts:[],publications});
  const search=Vue.ref(query);
- const {publicationStatuses,unpublishedDrafts,drafts,draftSummary,postTitle,customTitle}=runInNewContext(source.slice(source.indexOf('const publicationStatuses ='),source.indexOf('const items = computed('))+';({publicationStatuses,unpublishedDrafts,drafts,draftSummary,postTitle,customTitle})',{computed:Vue.computed,state,search});
+ const {publicationStatuses,unpublishedDrafts,drafts,draftSummary,postTitle,customTitle,isFullyPublished}=runInNewContext(source.slice(source.indexOf('const publicationStatuses ='),source.indexOf('const items = computed('))+';({publicationStatuses,unpublishedDrafts,drafts,draftSummary,postTitle,customTitle,isFullyPublished})',{computed:Vue.computed,state,search,editor:Vue.ref(null)});
  const app=()=>Vue.createSSRApp({render,setup:()=>({
-  state,publicationStatuses,unpublishedDrafts,drafts,draftSummary,postTitle,customTitle,postName:customTitle(draft),search,editor:editorOpen?draft:null,
+  state,isFullyPublished,publicationStatuses,unpublishedDrafts,drafts,draftSummary,postTitle,customTitle,isFullyPublished,postName:customTitle(draft),search,editor:editorOpen?draft:null,
   date:()=>'',symbols:{},names:{},network:'shared',chosen:[],items:[],preview:[],previewItemsFor:()=>[],
-  busy,saving:false,pending:false,newDraft:()=>{},selectDraft:()=>{},closeDraft:()=>{},changed:()=>{},
+  destinationChecks:[],destinationStatus:()=>undefined,scheduleBlocked:false,unfinishedPublications:[],busy,saving:false,pending:false,newDraft:()=>{},selectDraft:()=>{},closeDraft:()=>{},changed:()=>{},
   resetOverride:()=>{},addPost:()=>{},deleteDraft:()=>{},
   previewOpen:false,scheduledLocked:false,allowScheduledEdit:false,canUnscheduleDraft:false,sharedOverrideWarning:'',locked:false,unlockScheduledEdit:()=>{},
   selectedDraftIds:selected,allDraftsSelected:drafts.value.length>0&&drafts.value.every(d=>selected.includes(d.id)),selectAllDrafts:()=>{},deleteDrafts:()=>{},syncing:false,contextMenu:null,showContextMenu:()=>{},
@@ -28,7 +28,7 @@ async function renderDraft(publications,{title='My draft',editorOpen=false,query
  return {html:await renderToString(app()),renderHtml:()=>renderToString(app()),state,publicationStatuses,drafts,search};
 }
 
-test('published drafts leave Posts even with remaining scheduled publications', async () => {
+test('partially published drafts stay in Posts until all unfinished destinations complete', async () => {
  const {html,state,publicationStatuses}=await renderDraft([
   {draft_id:'draft',status:'published'},
   {draft_id:'draft',status:'published'},
@@ -36,7 +36,9 @@ test('published drafts leave Posts even with remaining scheduled publications', 
   {draft_id:'other',status:'failed'},
  ],{editorOpen:true});
 
- assert.doesNotMatch(html, /Published · 2|Scheduled · 1|Post title|>My draft</);
+ assert.match(html, /Published · 2/);
+ assert.match(html, /Scheduled · 1/);
+ assert.match(html, /Post title/);
  state.value.publications[2].status='published';
  assert.equal(publicationStatuses.value.draft.published,3);
  assert.equal(publicationStatuses.value.draft.scheduled,undefined);

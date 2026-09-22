@@ -12,7 +12,8 @@ const template=view.slice(view.indexOf('<template>')+10,view.lastIndexOf('</temp
 const render=new Function('Vue',compile(template,{mode:'function',prefixIdentifiers:true}).code)(Vue);
 
 function context(status,busy=false) {
- return {page:'Published',queue:[],publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}],busy,
+ const post={id:'publication',status,snapshot:{title:'Post'},receipts:[]};
+ return {publicationGroups:[{key:post.id,post,publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}]}],publishedView:'published',syncing:false,page:'Published',queue:[],publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}],busy,
   symbols:{},accountFor:()=>null,date:()=>'',postTitle:p=>p.snapshot.title,publicationStatus:p=>p.status,canReschedule:()=>false,openRecovery:()=>{},deletePublication:()=>{},cancel:()=>{},postUrl:()=>null};
 }
 

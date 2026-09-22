@@ -2,9 +2,9 @@
 
 namespace App\Mcp\Tools;
 
-use App\Services\Workspace;
 use Laravel\Mcp\Request;
 use Laravel\Mcp\Response;
+use App\Services\Workspace;
 use Laravel\Mcp\Server\Tool;
 
 class WorkspaceTool extends Tool

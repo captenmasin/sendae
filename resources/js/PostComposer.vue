@@ -18,6 +18,12 @@ const {
     customTitle,
     deleteDraft,
     editor,
+    destinationChecks,
+    destinationStatus,
+    scheduleBlocked,
+    unfinishedPublications,
+    accountFor,
+    openRecovery,
     items,
     names,
     network,
@@ -80,9 +86,10 @@ const previewAccount = computed(() => previewAccounts.value.find((account) => ac
                 class="destination"
                 :class="{ checked: editor.content.account_ids.includes(a.id) }"
             >
-                <input type="checkbox" :value="a.id" v-model="editor.content.account_ids" @change="changed" />
+                <input type="checkbox" :value="a.id" v-model="editor.content.account_ids" @change="changed" :disabled="destinationStatus(a.id) === 'published'" />
                 <AccountLogo :provider="a.provider" :size="14" />
                 {{ a.name }}
+                <small v-if="destinationStatus(a.id) === 'published'">Published · unchanged</small>
                 <small v-if="a.status !== 'connected'">Reconnect required</small>
                 <Icon v-if="a.verified" name="BadgeCheck" :size="12" />
             </label>
@@ -93,6 +100,11 @@ const previewAccount = computed(() => previewAccounts.value.find((account) => ac
             >
                 <Icon name="Plus" :size="12" /> Connect an account
             </button>
+        </div>
+        <div v-for="post in unfinishedPublications" :key="post.id" class="override-note">
+            {{ accountFor(post)?.name || 'Disconnected account' }} · {{ post.status }}. {{ post.error }}
+            <span v-if="post.status !== 'publishing'">Recover this destination before editing its saved publication.</span>
+            <button v-if="post.status !== 'publishing'" class="text-button" @click="openRecovery(post)">Recover destination</button>
         </div>
         <div class="network-tabs">
             <button :class="{ active: network === 'shared' }" @click="customize('shared')">
@@ -160,7 +172,6 @@ const previewAccount = computed(() => previewAccounts.value.find((account) => ac
                         :disabled="busy"
                     />
                 </label>
-                <span>{{ Array.from(item.text).length }} characters</span>
             </div>
         </div>
         <button
@@ -189,18 +200,27 @@ const previewAccount = computed(() => previewAccounts.value.find((account) => ac
             </div>
             </section>
         </dialog>
+        <section v-if="destinationChecks.some(check => check.items.some(item => item.errors.length))" aria-label="Destination checks" class="destination-checks" aria-live="polite">
+            <div v-for="check in destinationChecks.filter(check => check.items.some(item => item.errors.length))" :key="check.account.id">
+                <strong>{{ check.account.name }} · {{ names[check.account.provider] }}</strong>
+                <div v-for="item in check.items.filter(item => item.errors.length)" :key="item.index">
+                    <span v-for="message in item.errors" :key="message">{{ message }}</span>
+                </div>
+                <button v-if="check.items.some(item => item.errors.length)" class="text-button" @click="customize(check.account.provider)">Edit {{ names[check.account.provider] }} version</button>
+            </div>
+        </section>
         <footer class="composer-footer">
             <button class="text-button" @click="deleteDraft" :disabled="busy || syncing">
                 Delete post
             </button>
             <div class="composer-actions">
-                <button class="outline" @click="schedule('now')" :disabled="busy || !chosen.length">
+                <button class="outline" @click="schedule('now')" :disabled="busy || syncing || scheduleBlocked">
                     Post now
                 </button>
-                <button v-if="scheduledLocked" class="outline" @click="openSchedule" :disabled="busy">
+                <button v-if="scheduledLocked" class="outline" @click="openSchedule" :disabled="busy || syncing">
                     Change date &amp; time
                 </button>
-                <button v-else class="primary" @click="openSchedule" :disabled="busy || syncing">
+                <button v-else class="primary" @click="openSchedule" :disabled="busy || syncing || scheduleBlocked">
                     Schedule
                     <Icon name="ArrowUpRight" :size="14" />
                 </button>
@@ -210,6 +230,7 @@ const previewAccount = computed(() => previewAccounts.value.find((account) => ac
 </template>
 
 <style scoped>
+.destination-checks { font-size: 12px; display: grid; gap: 10px; padding: 12px 0; }
 .post-preview-modal { width: 600px; }
 .preview-toggle { margin-left: auto; }
 .add-post { display: inline-flex; align-items: center; gap: 7px; }

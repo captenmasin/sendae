@@ -16,8 +16,22 @@ processes:
     auto_restart: false
     restart_when_changed: []
     env: {}
-  Build:
+  Build macOS:
     command: composer desktop:build
+    working_dir: null
+    auto_start: false
+    auto_restart: false
+    restart_when_changed: []
+    env: {}
+  Build Windows:
+    command: node scripts/prepare-desktop.mjs && php artisan native:build win x64 --no-interaction
+    working_dir: null
+    auto_start: false
+    auto_restart: false
+    restart_when_changed: []
+    env: {}
+  Fresh Install:
+    command: php artisan optimize:clear && composer clear-cache && pnpm store prune && rm -rf vendor node_modules && composer install && pnpm install --frozen-lockfile && composer desktop:setup
     working_dir: null
     auto_start: false
     auto_restart: false

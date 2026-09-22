@@ -3,7 +3,7 @@ import AccountLogo from './AccountLogo.vue';
 import Icon from './Icon.vue';
 import { useWorkspace } from './workspace.js';
 
-const { accountFor, busy, date, postTitle, refreshMetrics, state } = useWorkspace();
+const { accountFor, date, isRefreshingMetric, postTitle, refreshMetrics, state } = useWorkspace();
 </script>
 
 <template>
@@ -28,7 +28,9 @@ const { accountFor, busy, date, postTitle, refreshMetrics, state } = useWorkspac
                     <h3>{{ postTitle(p) }}</h3>
                     <p><AccountLogo :account="accountFor(p)" :size="16" /> {{ accountFor(p)?.name }} · Published: {{ date(p.published_at) }}</p>
                 </div>
-                <button class="outline" @click="refreshMetrics(p)" :disabled="busy">Refresh</button>
+                <button class="outline" @click="refreshMetrics(p)" :disabled="isRefreshingMetric(p)">
+                    {{ isRefreshingMetric(p) ? 'Refreshing…' : 'Refresh' }}
+                </button>
             </div>
             <div class="metrics-grid">
                 <div

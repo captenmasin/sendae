@@ -1,15 +1,18 @@
 <script setup>
+import { computed, onMounted, ref } from 'vue';
 import Icon from './Icon.vue';
 import WorkspaceAvatar from './WorkspaceAvatar.vue';
 import { useWorkspace } from './workspace.js';
 
 const {
+    agentGuide,
     busy,
     colorScheme,
     currentWorkspace,
     deleteWorkspace,
     editWorkspace,
     gravatarUrl,
+    openLink,
     profileForm,
     savingProfile,
     setTheme,
@@ -19,6 +22,56 @@ const {
     theme,
     updateProfile,
 } = useWorkspace();
+const mcpCopied = ref(false);
+onMounted(() => {
+    agentGuide.value = 'claude';
+});
+const mcpUrl = computed(() => state.value.settings.mcp_url || '');
+const guides = computed(() => ({
+    claude: {
+        label: 'Claude',
+        summary: 'Manage your content from Claude',
+        requirement: 'Requires Claude Pro or Max.',
+        steps: [
+            ['Copy the server URL.'],
+            ['In Claude, ', { href: 'https://claude.ai/new?modal=add-custom-connector#customize/connectors', label: 'add a custom connector' }, ' and paste the URL.'],
+            ['Claude opens Sendae in your browser. Choose Open Sendae, then approve access in the app.'],
+            ['In a new conversation, ask Claude for your Sendae account details.'],
+        ],
+    },
+    chatgpt: {
+        label: 'ChatGPT',
+        summary: 'Manage your content from ChatGPT',
+        requirement: 'Requires ChatGPT Pro or Plus.',
+        steps: [
+            ['Copy the server URL.'],
+            ['In ChatGPT, open ', { href: 'https://chatgpt.com/#settings/Security', label: 'Settings, then Security and login' }, ', and turn on Developer mode.'],
+            [{ href: 'https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins', label: 'Add a connector' }, ', paste the URL, and leave the authentication settings as they are.'],
+            ['ChatGPT opens Sendae in your browser. Choose Open Sendae, then approve access in the app.'],
+            ['In a new conversation, ask ChatGPT for your Sendae account details.'],
+        ],
+    },
+    mcp: {
+        label: 'MCP',
+        summary: 'Connect any tool to the Sendae MCP server',
+        requirement: 'Streamable HTTP. Choose OAuth when the client asks.',
+        steps: [
+            ['Add Sendae as a remote MCP server with the URL above.'],
+            ['In Claude Code, run the command below, then run /mcp and choose Sendae.'],
+            ['In Cursor, open MCP settings and add the configuration below. Cursor asks you to sign in.'],
+        ],
+        command: `claude mcp add sendae --transport http --url "${mcpUrl.value}"`,
+        cursor: JSON.stringify({ mcpServers: { sendae: { url: mcpUrl.value } } }, null, 2),
+    },
+}));
+async function copyMcpUrl() {
+    try {
+        await navigator.clipboard.writeText(mcpUrl.value);
+        mcpCopied.value = true;
+    } catch {
+        mcpCopied.value = false;
+    }
+}
 </script>
 
 <template>
@@ -94,6 +147,38 @@ const {
                 </form>
             </div>
         </article>
+        <article class="settings-section" aria-labelledby="settings-agents">
+            <div class="settings-section-heading">
+                <h2 id="settings-agents">Agents</h2>
+                <p>Connect an assistant to this account.</p>
+            </div>
+            <div class="settings-section-body">
+                <div class="agent-cards" role="tablist" aria-label="Agents">
+                    <button v-for="(guide, id) in guides" :key="id" type="button" role="tab" :aria-selected="agentGuide === id" @click="agentGuide = id">
+                        <strong>{{ guide.label }}</strong>
+                        <span>{{ guide.summary }}</span>
+                    </button>
+                </div>
+                <div class="agent-guide" role="tabpanel">
+                    <p class="settings-hint">{{ guides[agentGuide].requirement }}</p>
+                    <div class="agent-url">
+                        <code>{{ mcpUrl }}</code>
+                        <button type="button" class="outline" @click="copyMcpUrl">{{ mcpCopied ? 'Copied' : 'Copy' }}</button>
+                    </div>
+                    <p class="settings-hint">A connected client can use every workspace on this account.</p>
+                    <ol class="agent-steps">
+                        <li v-for="(step, index) in guides[agentGuide].steps" :key="index">
+                            <template v-for="(part, partIndex) in step" :key="partIndex">
+                                <a v-if="part.href" :href="part.href" rel="noopener" @click.prevent="openLink(part.href)" @auxclick.middle.prevent="openLink(part.href)">{{ part.label }}</a>
+                                <template v-else>{{ part }}</template>
+                            </template>
+                        </li>
+                    </ol>
+                    <pre v-if="guides[agentGuide].command" class="agent-snippet"><code>{{ guides[agentGuide].command }}</code></pre>
+                    <pre v-if="guides[agentGuide].cursor" class="agent-snippet"><code>{{ guides[agentGuide].cursor }}</code></pre>
+                </div>
+            </div>
+        </article>
     </section>
 </template>
 
@@ -142,7 +227,19 @@ const {
 .settings-password>label { width: calc(50% - 8px); }
 .settings-account-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 4px; }
 .settings-account-actions .outline { gap: 8px; }
+.agent-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.agent-cards button { min-width: 0; text-align: left; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: transparent; }
+.agent-cards button[aria-selected=true] { border-color: currentColor; box-shadow: 0 0 0 1px currentColor; }
+.agent-cards strong { display: block; font-size: 13px; margin-bottom: 4px; }
+.agent-cards span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.agent-guide { margin-top: 16px; }
+.agent-url { display: flex; gap: 8px; align-items: stretch; margin: 10px 0; }
+.agent-url code { display: flex; align-items: center; flex: 1; min-width: 0; margin: 0; padding: 0 12px; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); font-family: inherit; font-size: 12px; font-weight: 550; line-height: 1; }
+.agent-url .outline { flex-shrink: 0; }
+.agent-steps { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: 13px; line-height: 1.5; }
+.agent-steps a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.agent-snippet { margin: 12px 0 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
 @media (max-width: 1100px) { .settings-page { margin-left: 25px; margin-right: 25px; } .settings-section { grid-template-columns: 135px minmax(0, 1fr); gap: 24px; } }
 @media (max-width: 900px) { .settings-section { grid-template-columns: 1fr; gap: 22px; } .settings-section-heading p { max-width: none; } }
-@media (max-width: 580px) { .settings-identity { flex-wrap: wrap; } .settings-identity>button { margin-left: 62px; } .settings-delete-row { align-items: flex-start; flex-direction: column; gap: 12px; } .settings-fields { grid-template-columns: 1fr; } .settings-password>label { width: 100%; } .settings-theme-options { gap: 8px; } .settings-theme-preview { height: 64px; padding: 7px; gap: 5px; } }
+@media (max-width: 580px) { .settings-identity { flex-wrap: wrap; } .settings-identity>button { margin-left: 62px; } .settings-delete-row { align-items: flex-start; flex-direction: column; gap: 12px; } .settings-fields { grid-template-columns: 1fr; } .settings-password>label { width: 100%; } .settings-theme-options { gap: 8px; } .settings-theme-preview { height: 64px; padding: 7px; gap: 5px; } .agent-cards { grid-template-columns: 1fr; } }
 </style>

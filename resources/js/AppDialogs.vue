@@ -5,6 +5,18 @@ import { useWorkspace } from './workspace.js';
 
 const vModal = { mounted: (el) => el.showModal(), beforeUnmount: (el) => el.close() };
 
+function callbackHost(uri) {
+    try {
+        return new URL(uri).hostname;
+    } catch {
+        return '';
+    }
+}
+function isLoopback(uri) {
+    const host = callbackHost(uri);
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 const {
     authenticated,
     authorizationForm,
@@ -15,10 +27,18 @@ const {
     chosen,
     connectionForm,
     decideAuthorization,
+    editQueueSlots,
     error,
     postTitle,
+    previewQueue,
+    queueAccountsWithoutSlots,
+    queuePreview,
+    queuePreviewDate,
+    queuePreviewError,
+    queuePreviewing,
     recover,
     recovery,
+    separatesPublication,
     recoveryAction,
     recoveryAt,
     recoveryId,
@@ -182,8 +202,8 @@ const {
                         </select>
                     </label>
                     <label v-if="recoveryAction === 'confirmed'">
-                        Provider post ID
-                        <input v-model="recoveryId" required placeholder="Post ID, Bluesky AT URI or LinkedIn URN" />
+                        Published post link
+                        <input v-model="recoveryId" required placeholder="Paste the post’s full URL (or provider ID)" />
                     </label>
                     <label v-else>
                         New date & time
@@ -194,6 +214,8 @@ const {
                         Check the actual provider before resolving an uncertain outcome. Rescheduling an
                         already published item can create a duplicate.
                     </p>
+                    <p v-if="separatesPublication(recovery) && recoveryAction === 'reschedule'" class="muted">Changing this destination’s time or unscheduling it moves it to a separate post in Posts. Other destinations keep their schedules.</p>
+                    <p v-if="recovery.status === 'uncertain'" class="muted">Open this account on the social network and check item {{ (recovery.receipts || []).length + 1 }}: “{{ recovery.snapshot.items?.[(recovery.receipts || []).length]?.text }}”. If it exists, copy its link here. If it does not, choose “not published” before rescheduling.</p>
                     <p v-if="error" role="alert">{{ error }}</p>
                     <button class="primary" :disabled="busy || syncing">
                         {{
@@ -229,19 +251,36 @@ const {
                 <form @submit.prevent="schedule()">
                     <label>
                         Publish time
-                        <select v-model="scheduleMode">
+                        <select v-model="scheduleMode" @change="scheduleMode === 'queue' && previewQueue()">
                             <option value="exact">Choose a date & time</option>
                             <option value="queue">Next weekly slot per account</option>
-                            <option value="now">Publish now</option>
                         </select>
                     </label>
                     <label v-if="scheduleMode === 'exact'">
                         Date & time · {{ Intl.DateTimeFormat().resolvedOptions().timeZone }}
                         <input v-model="scheduleAt" type="datetime-local" required />
                     </label>
-                    <button class="primary" :disabled="busy || !chosen.length">
+                    <template v-if="scheduleMode === 'queue'">
+                        <p v-if="queueAccountsWithoutSlots.length" class="error-text">
+                            Add weekly posting slots for {{ queueAccountsWithoutSlots.map((account) => account.name).join(', ') }} first.
+                            <button
+                                type="button"
+                                class="text-button"
+                                @click="editQueueSlots(queueAccountsWithoutSlots[0])"
+                            >Manage posting slots</button>
+                        </p>
+                        <p v-else-if="queuePreviewing" class="muted">Finding the next available slot…</p>
+                        <p v-else-if="queuePreviewError" class="error-text">{{ queuePreviewError }}</p>
+                        <ul v-else-if="queuePreview.length" class="queue-preview" aria-label="Next weekly posting times">
+                            <li v-for="preview in queuePreview" :key="preview.account_id">
+                                <strong>{{ preview.name }}</strong> · {{ queuePreviewDate(preview) }}
+                            </li>
+                        </ul>
+                        <p v-else class="muted">Choose this option to review the next available time for each account.</p>
+                    </template>
+                    <button class="primary" :disabled="busy || !chosen.length || scheduleMode === 'queue' && (!queuePreview.length || queuePreviewing || queueAccountsWithoutSlots.length || queuePreviewError)">
                         {{
-                            busy ? 'Saving…' : scheduledLocked ? 'Update' : scheduleMode === 'now' ? 'Publish now' : 'Confirm schedule'
+                            busy ? 'Saving…' : scheduledLocked ? 'Update' : 'Confirm schedule'
                         }}
                     </button>
                     <button v-if="scheduledLocked" type="button" class="outline" @click="async () => { await unschedule(); if (!error) scheduleOpen = false; }" :disabled="busy || syncing">
@@ -361,38 +400,54 @@ const {
         v-modal
         class="modal-backdrop"
         aria-labelledby="connection-title"
-        @cancel.prevent="connectionForm = null"
+        @cancel.prevent="!busy && (connectionForm = null)"
+        @click.self="!busy && (connectionForm = null)"
     >
-        <section class="modal">
-            <button class="modal-close" @click="connectionForm = null" aria-label="Cancel account connection">
+        <section class="modal connection-modal">
+            <button
+                class="modal-close"
+                @click="connectionForm = null"
+                aria-label="Cancel account connection"
+                :disabled="busy"
+            >
                 ×
             </button>
-            <h2 id="connection-title">Choose accounts</h2>
-            <p>
-                Connect to
-                {{
-                    state.settings.workspaces?.find((w) => w.id === connectionForm.workspace_id)?.name ||
-                    'the workspace where you started this connection'
-                }}.
-            </p>
-            <p v-if="error" role="alert">{{ error }}</p>
-            <form @submit.prevent="selectConnection">
-                <label
-                    v-for="(account, index) in connectionForm.accounts"
-                    :key="account.provider_id"
-                    class="destination"
-                >
-                    <input type="checkbox" v-model="connectionForm.selected" :value="index" />
-                    <AccountLogo :account="account" :provider="connectionForm.provider" />
-                    {{ account.name }}
+            <header class="connection-header">
+                <h2 id="connection-title">Add accounts</h2>
+                <p>
+                    Select the profiles to add to
+                    <strong>{{ state.settings.workspaces?.find((w) => w.id === connectionForm.workspace_id)?.name || 'this workspace' }}</strong>.
+                </p>
+            </header>
+            <p v-if="error" class="connection-error" role="alert">{{ error }}</p>
+            <form class="connection-form" @submit.prevent="selectConnection">
+                <fieldset class="connection-accounts">
+                    <legend>Accounts found</legend>
+                    <label
+                        v-for="(account, index) in connectionForm.accounts"
+                        :key="account.provider_id"
+                        class="connection-account"
+                        :class="{ selected: connectionForm.selected.includes(index) }"
+                    >
+                        <input type="checkbox" v-model="connectionForm.selected" :value="index" :disabled="busy" />
+                        <AccountLogo :account="account" :provider="connectionForm.provider" :size="24" />
+                        <span>{{ account.name }}</span>
+                    </label>
+                </fieldset>
+                <label class="connection-timezone">
+                    <span>Timezone</span>
+                    <input v-model="connectionForm.timezone" required list="connection-timezones" :disabled="busy" />
+                    <small>Used for this account’s posting schedule.</small>
+                    <datalist id="connection-timezones">
+                        <option v-for="zone in Intl.supportedValuesOf('timeZone')" :value="zone" :key="zone" />
+                    </datalist>
                 </label>
-                <label>
-                    Timezone
-                    <input v-model="connectionForm.timezone" required />
-                </label>
-                <button class="primary" :disabled="busy || !connectionForm.selected.length">
-                    Connect selected accounts
-                </button>
+                <footer class="connection-actions">
+                    <button type="button" class="text-button" @click="connectionForm = null" :disabled="busy">Cancel</button>
+                    <button class="primary" :disabled="busy || !connectionForm.selected.length">
+                        {{ busy ? 'Connecting…' : connectionForm.selected.length ? `Connect ${connectionForm.selected.length} account${connectionForm.selected.length === 1 ? '' : 's'}` : 'Select accounts' }}
+                    </button>
+                </footer>
             </form>
         </section>
     </dialog>
@@ -403,20 +458,21 @@ const {
         aria-labelledby="authorization-title"
         @cancel.prevent="decideAuthorization(false)"
     >
-        <section class="modal">
+        <section class="modal authorization-modal">
             <h2 id="authorization-title">Connect {{ authorizationForm.client }}?</h2>
             <p>
-                This client will be able to read and edit drafts, attach media, schedule, publish, cancel, and
-                refresh analytics. Publishing will not ask for another approval.
+                {{ authorizationForm.client }} can read and edit drafts, attach media, schedule, publish, cancel, and
+                refresh analytics in every workspace on this account, including workspaces created later. Publishing
+                will not ask for another approval.
             </p>
             <p>Signed in as {{ state.settings.email }}.</p>
-            <p>Requested permissions: {{ authorizationForm.scopes.join(', ') }}</p>
-            <p style="overflow-wrap: anywhere">Return to: {{ authorizationForm.redirect_uri }}</p>
+            <p v-if="isLoopback(authorizationForm.redirect_uri)">This approval returns to an app on this Mac.</p>
+            <p v-else-if="callbackHost(authorizationForm.redirect_uri)">Returns to {{ callbackHost(authorizationForm.redirect_uri) }}.</p>
             <p v-if="error" role="alert">{{ error }}</p>
-            <button class="primary" @click="decideAuthorization(true)" :disabled="busy">
-                Authorize access
-            </button>
-            <button class="outline" @click="decideAuthorization(false)" :disabled="busy">Decline</button>
+            <footer class="authorization-actions">
+                <button class="primary" @click="decideAuthorization(true)" :disabled="busy">Authorize access</button>
+                <button type="button" class="outline" @click="decideAuthorization(false)" :disabled="busy">Decline</button>
+            </footer>
         </section>
     </dialog>
 </template>
@@ -427,4 +483,7 @@ const {
 .workspace-image-upload input { position: absolute; width: 1px; height: 1px; padding: 0; opacity: 0; }
 .workspace-image-upload:focus-within { outline: 2px solid currentColor; outline-offset: 3px; }
 .workspace-image-preview { margin: 0; }
+.queue-preview { display: grid; gap: 6px; margin: 0; padding-left: 18px; font-size: 12px; }
+.authorization-modal > p { margin-bottom: 14px; }
+.authorization-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 </style>

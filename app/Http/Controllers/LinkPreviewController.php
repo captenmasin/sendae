@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\LinkPreview;
 use Illuminate\Http\Request;
+use App\Services\LinkPreview;
 
 class LinkPreviewController extends Controller
 {

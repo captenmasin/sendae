@@ -34,7 +34,7 @@ const pages = {
 };
 try {
     const storedPage = window.sessionStorage.getItem('sendae.page');
-    const savedPage = storedPage === 'Queue' ? 'Calendar' : storedPage;
+    const savedPage = ['Queue', 'Needs attention'].includes(storedPage) ? 'Calendar' : storedPage;
     if (Object.hasOwn(pages, savedPage)) page.value = savedPage;
 } catch {
     // Navigation remains available when session storage is unavailable.

@@ -46,6 +46,19 @@ test('platform cards identify each account and remove disconnected accounts from
  assert.match(html,/Not connected/);
 });
 
+test('LinkedIn Pages explain when provider approval prevents connection', async () => {
+ const source=readFileSync(new URL('../resources/js/AccountsPage.vue',import.meta.url),'utf8');
+ const template=source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>'));
+ const render=new Function('Vue',compile(template,{mode:'function',prefixIdentifiers:true}).code)(Vue);
+ const Icon={props:['name','size'],template:'<svg></svg>'};
+ const html=await renderToString(Vue.createSSRApp({render,components:{AccountLogo,Icon},data:()=>({
+  sync:()=>{}, connect:()=>{}, editSlots:()=>{}, disconnect:()=>{}, providerStatus:()=> 'Awaiting approval',
+  names:{linkedin_page:'LinkedIn Page'}, busy:false,syncing:false,state:{accounts:[]},canConnect:()=>false,
+ })}));
+ assert.match(html,/awaiting provider approval/);
+ assert.match(html,/connect a Page once approval is granted/);
+});
+
 test('logos use profile images, recover from image failure and retry updated URLs without mutating accounts', async () => {
     const account = Vue.reactive({ provider: 'threads', name: 'My profile', avatar_url: 'https://images.example/profile.jpg' });
     const props = Vue.reactive({ account, size: 28 });

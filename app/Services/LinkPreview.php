@@ -3,13 +3,13 @@
 namespace App\Services;
 
 use Dom\HTMLDocument;
+use RuntimeException;
 use GuzzleHttp\Psr7\Uri;
 use GuzzleHttp\Psr7\UriResolver;
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 use Psr\Http\Message\ResponseInterface;
-use RuntimeException;
+use Illuminate\Http\Client\ConnectionException;
 
 class LinkPreview
 {

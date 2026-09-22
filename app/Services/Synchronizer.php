@@ -2,20 +2,20 @@
 
 namespace App\Services;
 
-use App\Models\Account;
 use App\Models\Draft;
 use App\Models\Media;
-use App\Models\Publication;
+use App\Models\Account;
 use App\Models\Setting;
-use Illuminate\Auth\AuthenticationException;
-use Illuminate\Http\Client\PendingRequest;
+use App\Models\Publication;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Cache;
+use Native\Desktop\Facades\Shell;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
-use Native\Desktop\Facades\Shell;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Auth\AuthenticationException;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class Synchronizer
@@ -335,7 +335,8 @@ class Synchronizer
             app(Workspace::class)->invalid('version', 'This draft changed. Reload it before scheduling.');
         }
         unset($data['draft_snapshot']);
-        $this->run($draft !== null);
+        $separates = ($action === 'recover' && ($data['action'] ?? null) === 'reschedule') || ($action === 'cancel' && ($data['separate'] ?? false));
+        $this->run($draft !== null || $separates);
         if ($draft) {
             $draft->refresh();
             if ($draft->only(['title', 'content']) !== $snapshot) {

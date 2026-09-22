@@ -1,9 +1,10 @@
-import {readFileSync,writeFileSync} from 'node:fs';
+import {readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {compileIconComposer,installIntoAppBundle,patchElectronBuilder,patchInstallsAppIcon,patchRunCommand,patchSetDockIcon} from './macos-icon.mjs';
 const cwd=new URL('../vendor/nativephp/desktop/resources/electron/',import.meta.url);
 const root=new URL('../',import.meta.url);
+rmSync(new URL('public/hot',root),{force:true});
 const path=new URL('package.json',cwd);
 const pkg=JSON.parse(readFileSync(path));
 // NativePHP 2.3 ships stale Electron dependencies and omits a compiled plugin file.
@@ -15,6 +16,8 @@ execFileSync('npm',['install'],{cwd,stdio:'inherit'});
 execFileSync('node',['node_modules/electron/install.js'],{cwd,stdio:'inherit'});
 const pluginIndex=new URL('electron-plugin/src/index.ts',cwd);
 writeFileSync(pluginIndex,patchSetDockIcon(readFileSync(pluginIndex,'utf8')));
+const serverUtilsPath=new URL('electron-plugin/src/server/utils.ts',cwd);
+writeFileSync(serverUtilsPath,readFileSync(serverUtilsPath,'utf8').replace('http://localhost:${state.phpPort}','http://127.0.0.1:${state.phpPort}'));
 execFileSync('npm',['run','plugin:build'],{cwd,stdio:'inherit'});
 
 const composerPath=new URL('../composer.json',import.meta.url);

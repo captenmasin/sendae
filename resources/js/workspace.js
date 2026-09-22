@@ -1,5 +1,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, inject } from 'vue';
 
+export const syncIntervalMs = 5000;
+
 export const workspaceKey = Symbol('workspace');
 
 export function useWorkspace() {
@@ -80,6 +82,9 @@ export function createWorkspace() {
     const scheduleOpen = ref(false),
         scheduleMode = ref('exact'),
         scheduleAt = ref(''),
+        queuePreview = ref([]),
+        queuePreviewError = ref(''),
+        queuePreviewing = ref(false),
         email = ref(''),
         password = ref('');
     const slotsAccount = ref(null),
@@ -91,6 +96,7 @@ export function createWorkspace() {
     const pendingLink = ref(null),
         connectionForm = ref(null),
         authorizationForm = ref(null),
+        agentGuide = ref('claude'),
         resetForm = ref(null);
     const blueskyForm = ref(null);
     const names = {
@@ -129,6 +135,12 @@ export function createWorkspace() {
     }
     const pending = ref(false);
     const scheduledUpdateErrors = ref({});
+    const syncError = ref('');
+    const lastSyncedAt = ref(null);
+    const syncStatus = computed(() => syncing.value ? 'Syncing…' : syncError.value
+        ? 'Sync failed · data may be outdated' : pending.value || saving.value || state.value.drafts.some(draft => draft.dirty)
+            || state.value.media.some(media => !media.synced) ? 'Changes waiting to sync'
+            : lastSyncedAt.value ? 'Last synced ' + date(lastSyncedAt.value) : 'Not synced this session');
     let editorRevision = 0;
     let savePromise = null,
         syncRequest = null,
@@ -172,7 +184,7 @@ export function createWorkspace() {
         try {
             state.value = await api('state');
             authenticated.value = true;
-            if (editor.value && publicationStatuses.value[editor.value.id]?.published) {
+            if (editor.value && isFullyPublished(editor.value.id)) {
                 editor.value = null;
                 pending.value = false;
                 workingItems.value = null;
@@ -251,7 +263,7 @@ export function createWorkspace() {
     }
     async function openDraft(draft) {
         if (busy.value || syncing.value) return;
-        if (publicationStatuses.value[draft.id]?.published) {
+        if (isFullyPublished(draft.id)) {
             page.value = 'Published';
             return false;
         }
@@ -348,6 +360,15 @@ export function createWorkspace() {
         }
         return statuses;
     });
+    function isFullyPublished(id) {
+        const statuses = publicationStatuses.value[id] || {};
+        return !!statuses.published && !['scheduled', 'retry', 'publishing', 'failed', 'missed', 'uncertain'].some(status => statuses[status]);
+    }
+    function destinationStatus(id) {
+        return state.value.publications.find(post => post.draft_id === editor.value?.id && post.account_id === id && post.status !== 'cancelled')?.status;
+    }
+    const unfinishedPublications = computed(() => state.value.publications.filter(post => post.draft_id === editor.value?.id
+        && ['failed', 'missed', 'uncertain', 'publishing'].includes(post.status)));
     function draftSummary(content) {
         const versions = [content.items, ...Object.values(content.overrides)];
         const text = versions
@@ -385,7 +406,7 @@ export function createWorkspace() {
         return preview + ((post?.snapshot?.title ?? post?.title ?? '').match(/(?: \(conflict copy\))+$/)?.[0] || '');
     }
     const unpublishedDrafts = computed(() =>
-        state.value.drafts.filter((draft) => !publicationStatuses.value[draft.id]?.published),
+        state.value.drafts.filter((draft) => !isFullyPublished(draft.id)),
     );
     const drafts = computed(() =>
         unpublishedDrafts.value.filter((d) =>
@@ -403,6 +424,7 @@ export function createWorkspace() {
     const chosen = computed(() =>
         state.value.accounts.filter((a) => editor.value?.content.account_ids.includes(a.id)),
     );
+    const queueAccountsWithoutSlots = computed(() => chosen.value.filter((account) => !account.slots?.length));
     function previewItemsFor(account) {
         const key = account?.provider;
         let list = editor.value?.content.items || [];
@@ -412,6 +434,32 @@ export function createWorkspace() {
             list = [{ text: list.map((i) => i.text).join('\n\n'), media_ids: list.flatMap((i) => i.media_ids) }];
         return list;
     }
+    const destinationChecks = computed(() => chosen.value.filter(account => !['published', 'failed', 'missed'].includes(destinationStatus(account.id))).map(account => ({
+        account, items: previewItemsFor(account).map((item, index) => {
+            const provider = account.provider;
+            const limit = { x: 280, bluesky: 300, threads: 500, facebook: 63206, linkedin: 3000, linkedin_page: 3000 }[provider];
+            const text = item.text || '';
+            // ponytail: match the server's conservative X weighting until it adopts twitter-text conformance.
+            const length = provider === 'x' ? Array.from(text.replace(/https?:\/\/[^\s]+/gu, 'a'.repeat(23))).reduce((sum, char) => {
+                const code = char.codePointAt(0);
+                return sum + (code <= 0x10ff || code >= 0x2000 && code <= 0x200d || code >= 0x2010 && code <= 0x201f || code >= 0x2032 && code <= 0x2037 ? 1 : 2);
+            }, 0) : provider === 'bluesky' ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].length : Array.from(text).length;
+            const media = item.media_ids.map(attachment);
+            const max = { x: 4, bluesky: 4, threads: 20, facebook: 10, linkedin: 20, linkedin_page: 20 }[provider];
+            const errors = [];
+            if (!text.trim() && !media.length) errors.push('Add text or media.');
+            if (length > limit) errors.push('Shorten by ' + (length - limit) + ' characters.');
+            if (account.status !== 'connected') errors.push('Reconnect this account.');
+            if (media.some(file => !file)) errors.push('Remove missing attachments.');
+            if (media.length > max || media.length > 1 && media.some(file => file?.mime.startsWith('video/'))) errors.push('Use up to ' + max + ' images or one video.');
+            if (provider === 'bluesky') {
+                if (new TextEncoder().encode(text).length > 3000) errors.push('Text exceeds 3,000 UTF-8 bytes.');
+                if (media.some(file => file && (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mime) || file.size > 2000000))) errors.push('Use JPEG, PNG or WebP images up to 2 MB. Video is not supported.');
+            }
+            return { index, length, limit, errors };
+        }),
+    })));
+    const scheduleBlocked = computed(() => !!publicationStatuses.value[editor.value?.id]?.published && !scheduledLocked.value || !destinationChecks.value.length || destinationChecks.value.some(check => check.items.some(item => item.errors.length)));
     const preview = computed(() => previewItemsFor(chosen.value[0]));
     const sharedOverrideWarning = computed(() => {
         if (!editor.value || network.value !== 'shared') return '';
@@ -436,6 +484,7 @@ export function createWorkspace() {
             .filter((p) => ['scheduled', 'retry', 'publishing'].includes(p.status))
             .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at)),
     );
+    const needsAttention = computed(() => state.value.publications.filter(post => ['failed', 'missed', 'uncertain', 'retry'].includes(post.status)));
     const history = computed(() =>
         state.value.publications.filter((p) => !['scheduled', 'retry', 'publishing'].includes(p.status)),
     );
@@ -552,12 +601,15 @@ export function createWorkspace() {
                 await refresh();
             })();
             await syncRequest;
+            lastSyncedAt.value = new Date().toISOString();
+            syncError.value = '';
             if (editor.value && !pending.value && !saving.value) {
                 const index = state.value.drafts.findIndex((draft) => draft.id === editor.value.id);
                 if (editorRevision === revision) editor.value = clone(state.value.drafts[index] || null);
                 else if (index >= 0) state.value.drafts[index] = clone(editor.value);
             }
         } catch (e) {
+            syncError.value = e.message;
             if (manual) report(e);
         } finally {
             syncRequest = null;
@@ -568,10 +620,47 @@ export function createWorkspace() {
         scheduleMode.value = 'exact';
         const publication = state.value.publications.find((post) => post.draft_id === editor.value?.id && ['scheduled', 'retry'].includes(post.status));
         scheduleAt.value = publication?.scheduled_at ? localDateTime(new Date(publication.scheduled_at)) : '';
+        queuePreview.value = [];
+        queuePreviewError.value = '';
         scheduleOpen.value = true;
+    }
+    function queuePreviewDate(preview) {
+        return new Intl.DateTimeFormat(undefined, {
+            timeZone: preview.timezone,
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZoneName: 'short',
+        }).format(new Date(preview.scheduled_at));
+    }
+    async function previewQueue() {
+        queuePreview.value = [];
+        queuePreviewError.value = '';
+        if (!editor.value || !chosen.value.length || queueAccountsWithoutSlots.value.length || queuePreviewing.value) return;
+        queuePreviewing.value = true;
+        try {
+            await flush();
+            if (!editor.value) return;
+            queuePreview.value = await api('schedulePreview', {
+                draft_id: editor.value.id,
+                version: editor.value.version,
+                draft_snapshot: JSON.stringify({ title: editor.value.title, content: editor.value.content }),
+            });
+        } catch (e) {
+            queuePreviewError.value = e.message;
+        } finally {
+            queuePreviewing.value = false;
+        }
+    }
+    function editQueueSlots(account) {
+        scheduleOpen.value = false;
+        editSlots(account);
     }
     async function schedule(mode = scheduleMode.value) {
         if (busy.value || syncing.value) return;
+        if (scheduleBlocked.value) { error.value = 'Resolve the destination issues before scheduling.'; return; }
         const updating = scheduledLocked.value;
         await act(async () => {
             notice.value = '';
@@ -618,6 +707,7 @@ export function createWorkspace() {
             ? publication.id === post.id
             : editor.value && publication.draft_id === editor.value.id && ['scheduled', 'retry'].includes(publication.status));
         if (!publications.length) return;
+        const separate = post && separatesPublication(post);
         await act(async () => {
             if (publications.some((publication) => !['scheduled', 'retry'].includes(publication.status))) {
                 throw new Error('This post can no longer be unscheduled.');
@@ -633,7 +723,7 @@ export function createWorkspace() {
                 }
             }
             if (publications.some((publication) => publication.id === recovery.value?.id)) recovery.value = null;
-            notice.value = publications.length === 1 ? 'Post unscheduled.' : 'Post unscheduled from ' + publications.length + ' destinations.';
+            notice.value = separate ? 'Destination moved to a separate draft in Posts. Other destinations keep their schedules.' : publications.length === 1 ? 'Post unscheduled.' : 'Post unscheduled from ' + publications.length + ' destinations.';
         });
     }
     async function deletePublication(p) {
@@ -694,6 +784,8 @@ export function createWorkspace() {
         recovery.value = null;
         notice.value = '';
         state.value = { drafts: [], accounts: [], media: [], publications: [], settings: { providers: {} } };
+        syncError.value = '';
+        lastSyncedAt.value = null;
         await refresh();
         await sync(false);
     }
@@ -787,8 +879,10 @@ export function createWorkspace() {
             }
             await refresh();
             await flush();
-            await sync();
+            syncError.value = '';
+            lastSyncedAt.value = null;
         });
+        await sync(false);
     }
     function chooseAuth(mode) {
         authMode.value = mode;
@@ -823,6 +917,7 @@ export function createWorkspace() {
             connectionForm.value = null;
             blueskyForm.value = null;
             authorizationForm.value = null;
+            agentGuide.value = 'claude';
             authMode.value = 'signIn';
             authNotice.value = '';
             editor.value = null;
@@ -853,6 +948,9 @@ export function createWorkspace() {
         Number.isFinite(at.getTime())
             ? new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
             : '';
+    function separatesPublication(post) {
+        return !!state.value.drafts.find(draft => draft.id === post?.draft_id)?.content.account_ids.some(id => id !== post.account_id);
+    }
     async function reschedule(p, value) {
         if (busy.value || syncing.value) return false;
         return act(async () => {
@@ -866,13 +964,14 @@ export function createWorkspace() {
                 throw new Error('This time does not exist in your timezone. Choose another time.');
             }
             await flush();
+            const separate = separatesPublication(publication);
             await api('recover', { id: publication.id, action: 'reschedule', scheduled_at: at.toISOString() });
             await refresh();
             if (editor.value && !pending.value) {
                 editor.value = clone(state.value.drafts.find(draft => draft.id === editor.value.id) || editor.value);
                 workingItems.value = null;
             }
-            notice.value = 'Post rescheduled.';
+            notice.value = separate ? 'Destination moved to a separate post. Other destinations keep their schedules.' : 'Post rescheduled.';
             return true;
         });
     }
@@ -883,13 +982,19 @@ export function createWorkspace() {
             return;
         }
         await act(async () => {
+            await flush();
+            const separate = recoveryAction.value === 'reschedule' && separatesPublication(recovery.value);
             const payload = { id: recovery.value.id, action: recoveryAction.value };
             if (payload.action === 'confirmed') payload.post_id = recoveryId.value;
             else payload.scheduled_at = new Date(recoveryAt.value).toISOString();
             await api('recover', payload);
             recovery.value = null;
             await refresh();
-            notice.value = 'Publication recovery saved.';
+            if (editor.value && !pending.value) {
+                editor.value = clone(state.value.drafts.find(draft => draft.id === editor.value.id) || editor.value);
+                workingItems.value = null;
+            }
+            notice.value = separate ? 'Destination recovered as a separate post. Other destinations keep their schedules.' : 'Publication recovery saved.';
         });
     }
     function postUrl(p, id) {
@@ -911,6 +1016,9 @@ export function createWorkspace() {
     }
     async function openPost(p, id) {
         await act(() => api('openPost', { url: postUrl(p, id) }));
+    }
+    async function openLink(url) {
+        await act(() => api('openLink', { url }));
     }
     function connectionUrl(provider) {
         return state.value.settings.mode === 'server'
@@ -1080,11 +1188,22 @@ export function createWorkspace() {
             await refresh();
         });
     }
+    const refreshingMetrics = ref([]);
+    function isRefreshingMetric(p) {
+        return refreshingMetrics.value.includes(p.id);
+    }
     async function refreshMetrics(p) {
-        await act(async () => {
+        if (isRefreshingMetric(p)) return;
+        error.value = '';
+        refreshingMetrics.value = [...refreshingMetrics.value, p.id];
+        try {
             await api('analytics', { id: p.id });
             await refresh();
-        });
+        } catch (e) {
+            report(e);
+        } finally {
+            refreshingMetrics.value = refreshingMetrics.value.filter((id) => id !== p.id);
+        }
     }
     function keyboard(e) {
         if (!authenticated.value) return;
@@ -1153,6 +1272,10 @@ export function createWorkspace() {
         },
         { immediate: true },
     );
+    const pullRemoteChanges = () => {
+        if (globalThis.document?.visibilityState === 'hidden') return;
+        sync(false);
+    };
     onMounted(async () => {
         countdownTimer = setInterval(() => {
             now.value = Date.now();
@@ -1172,7 +1295,10 @@ export function createWorkspace() {
         }
         await readLink();
         linkTimer = setInterval(readLink, 1500);
-        interval = setInterval(() => sync(false), 30000);
+        interval = setInterval(() => sync(false), syncIntervalMs);
+        document.addEventListener('visibilitychange', pullRemoteChanges);
+        window.addEventListener('focus', pullRemoteChanges);
+        pullRemoteChanges();
         window.addEventListener('beforeunload', beforeUnload);
         window.addEventListener('keydown', keyboard);
     });
@@ -1186,6 +1312,8 @@ export function createWorkspace() {
         clearTimeout(connectTimer);
         window.removeEventListener('beforeunload', beforeUnload);
         window.removeEventListener('keydown', keyboard);
+        document.removeEventListener('visibilitychange', pullRemoteChanges);
+        window.removeEventListener('focus', pullRemoteChanges);
     });
     const activity = computed(() => {
         const events = [];
@@ -1238,6 +1366,7 @@ export function createWorkspace() {
         authNotice,
         authenticated,
         authorizationForm,
+        agentGuide,
         busy,
         canConnect,
         canReschedule,
@@ -1260,10 +1389,14 @@ export function createWorkspace() {
         deleteDrafts,
         deletePublication,
         deleteWorkspace,
+        destinationChecks,
+        destinationStatus,
         disconnect,
         draftSummary,
         drafts,
         unpublishedDrafts,
+        unfinishedPublications,
+        editQueueSlots,
         editSlots,
         editWorkspace,
         editor,
@@ -1274,14 +1407,19 @@ export function createWorkspace() {
         gravatarUrl,
         history,
         items,
+        isFullyPublished,
+        isRefreshingMetric,
         loaded,
+        lastSyncedAt,
         localDateTime,
         names,
         network,
+        needsAttention,
         newDraft,
         notice,
         openDraft,
         openPost,
+        openLink,
         openRecovery,
         page,
         password,
@@ -1298,6 +1436,11 @@ export function createWorkspace() {
         publicationStatus,
         publicationStatuses,
         queue,
+        queueAccountsWithoutSlots,
+        queuePreview,
+        queuePreviewDate,
+        queuePreviewError,
+        queuePreviewing,
         recover,
         recovery,
         recoveryAction,
@@ -1317,12 +1460,15 @@ export function createWorkspace() {
         savingProfile,
         schedule,
         scheduleAt,
+        scheduleBlocked,
         scheduleMode,
         scheduleOpen,
         openSchedule,
+        previewQueue,
         scheduledLocked,
         scheduledUpdateError,
         search,
+        separatesPublication,
         selectAllDrafts,
         selectDraft,
         selectConnection,
@@ -1336,7 +1482,9 @@ export function createWorkspace() {
         submitAuth,
         switchWorkspace,
         sync,
+        syncError,
         syncing,
+        syncStatus,
         theme,
         timezone,
         unlockScheduledEdit,

@@ -12,6 +12,7 @@ const {
     date,
     deletePublication,
     history,
+    needsAttention,
     localDateTime,
     openPost,
     openRecovery,
@@ -27,6 +28,7 @@ const {
 } = useWorkspace();
 
 const view = ref('calendar');
+const publishedView = ref('published');
 const month = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
 const selectedDay = ref(null);
 const draggedPost = ref(null);
@@ -74,13 +76,16 @@ const calendarDays = computed(() => {
     });
 });
 const publications = computed(() => {
+    if (page.value === 'Published') return history.value.filter((publication) =>
+        publishedView.value === 'cancelled' ? publication.status === 'cancelled' : publication.status === 'published');
     if (page.value !== 'Calendar') return history.value;
+    if (view.value === 'attention') return needsAttention.value;
     if (view.value === 'calendar' && selectedDay.value) {
         return publicationsByDay.value.get(selectedDay.value.toDateString()) || [];
     }
     return queue.value;
 });
-const publicationGroups = computed(() => page.value === 'Calendar'
+const publicationGroups = computed(() => page.value === 'Calendar' && view.value !== 'attention'
     ? groupPublications(publications.value)
     : publications.value.map(post => ({ key: post.id, post, publications: [post] })));
 
@@ -125,11 +130,16 @@ async function dropOnDay(day) {
 <template>
     <div class="page-heading publications-heading">
         <div>
-            <h1>{{ page === 'Calendar' ? 'Calendar' : 'Published' }}</h1>
+            <h1>{{ page }}</h1>
         </div>
         <div v-if="page === 'Calendar'" class="schedule-views" role="group" aria-label="Schedule view">
             <button class="outline" :aria-pressed="view === 'calendar'" @click="view = 'calendar'">Calendar</button>
             <button class="outline" :aria-pressed="view === 'list'" @click="view = 'list'">List</button>
+            <button class="outline" :aria-pressed="view === 'attention'" @click="view = 'attention'">Attention <span v-if="needsAttention.length">({{ needsAttention.length }})</span></button>
+        </div>
+        <div v-else-if="page === 'Published'" class="schedule-views" role="group" aria-label="Publication status">
+            <button class="outline" :aria-pressed="publishedView === 'published'" @click="publishedView = 'published'">Published</button>
+            <button class="outline" :aria-pressed="publishedView === 'cancelled'" @click="publishedView = 'cancelled'">Cancelled</button>
         </div>
     </div>
     <section class="content-section">
@@ -183,7 +193,7 @@ async function dropOnDay(day) {
                                                     @dragstart="startDrag($event, p)"
                                                     @dragend="clearDrag"
                                                 >
-                                                    <AccountLogo :provider="accountFor(p)?.provider" :size="16" />
+                                                    <AccountLogo :provider="accountFor(p)?.provider" :size="14" />
                                                 </button>
                                             </div>
                                         </div>
@@ -196,7 +206,7 @@ async function dropOnDay(day) {
                                             @dragstart="startDrag($event, p)"
                                             @dragend="clearDrag"
                                         >
-                                            <span>{{ time(p.scheduled_at) }} · {{ accountFor(p)?.name || 'Disconnected account' }}</span>
+                                            <span><AccountLogo :provider="accountFor(p)?.provider" :size="12" /> {{ time(p.scheduled_at) }} · {{ accountFor(p)?.name || 'Disconnected account' }}</span>
                                             <strong>{{ postTitle(p) }}</strong>
                                         </button>
                                     </template>
@@ -292,12 +302,14 @@ async function dropOnDay(day) {
         </div>
         <div v-else-if="!publications.length" class="empty">
             <div class="empty-art"><Icon :name="page === 'Calendar' ? 'Clock' : 'ArrowUpRight'" :size="36" /></div>
-            <h2>{{ page === 'Calendar' ? 'No queued posts' : 'No publications' }}</h2>
+            <h2>{{ page === 'Calendar' && view === 'attention' ? 'No publications need attention' : page === 'Calendar' ? 'No queued posts' : page === 'Published' && publishedView === 'cancelled' ? 'No cancelled publications' : page === 'Published' ? 'No published posts' : 'No publications' }}</h2>
             <p>
                 {{
-                    page === 'Calendar'
+                    page === 'Calendar' && view === 'attention'
+                        ? 'Failed, missed, uncertain, and retry publications appear here.'
+                        : page === 'Calendar'
                         ? 'Schedule a draft for a specific time or add it to your weekly queue.'
-                        : 'Published posts and failed attempts appear here.'
+                        : page === 'Published' && publishedView === 'cancelled' ? 'Cancelled posts can be recovered or deleted here.' : 'Published posts appear here.'
                 }}
             </p>
             <button class="outline" @click="page = 'Posts'">Back to posts</button>

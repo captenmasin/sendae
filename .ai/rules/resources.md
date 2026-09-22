@@ -6,10 +6,10 @@ paths:
 # Resources
 
 ## Plain grayscale interface
-Use black, white and gray throughout the desktop interface. Keep headings and copy functional; omit decorative eyebrows, motivational text, and duplicate titles. Defer MCP UI until explicitly requested; signed-in settings need account identity and sign-out only.
+Use black, white and gray throughout the desktop interface. Keep headings and copy functional; omit decorative eyebrows, motivational text, and duplicate titles. Settings end with an Agents section for Claude, ChatGPT, and generic MCP. Do not add a sidebar item, API key, or Agent Skill for that connection.
 
 ## Plain grayscale interface
-Use black, white and gray throughout the desktop interface. Keep headings and copy functional; omit decorative eyebrows, motivational text, and duplicate titles. Defer MCP UI until explicitly requested. Settings show workspace name/icon editing plus account identity and sign-out; never add a redundant sign-in form.
+Use black, white and gray throughout the desktop interface. Keep headings and copy functional; omit decorative eyebrows, motivational text, and duplicate titles. Settings show workspace name/icon editing, appearance, account identity, sign-out, and the Agents connection guides. Never add a redundant sign-in form.
 
 ## Quiet successful synchronization
 Routine successful synchronization should not show a banner, including manual sync, sign-in and workspace switches. Keep actionable conflict notifications and error handling.

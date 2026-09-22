@@ -2,11 +2,11 @@
 
 namespace App\Services;
 
-use App\Models\Account;
 use App\Models\Draft;
 use App\Models\Media;
-use App\Models\Publication;
+use App\Models\Account;
 use App\Models\Setting;
+use App\Models\Publication;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -89,7 +89,7 @@ class Workspace
         }
 
         abort_if(Draft::onlyTrashed()->whereKey($data['id'])->exists() && ! ($data['restore_scheduled'] ?? false), 410, 'This draft was deleted.');
-        abort_if(Publication::where('draft_id', $data['id'])->where('status', 'published')->exists(), 409, 'Published posts cannot be edited. Create a new post instead.');
+        abort_if(Publication::where('draft_id', $data['id'])->where('status', 'published')->exists() && ! Publication::where('draft_id', $data['id'])->whereIn('status', ['scheduled', 'retry', 'publishing', 'failed', 'missed', 'uncertain'])->exists(), 409, 'Published posts cannot be edited. Create a new post instead.');
 
         return $this->once('save', $data, function () use ($data, $sync) {
             $draft = Draft::withTrashed()->lockForUpdate()->find($data['id']);

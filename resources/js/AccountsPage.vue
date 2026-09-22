@@ -100,6 +100,9 @@ const {
                         </div>
                     </li>
                 </ul>
+                <p v-else-if="key === 'linkedin_page' && providerStatus(key) === 'Awaiting approval'">
+                    LinkedIn Page publishing is awaiting provider approval. You can connect a Page once approval is granted.
+                </p>
                 <p v-else>Not connected</p>
             </article>
         </div>

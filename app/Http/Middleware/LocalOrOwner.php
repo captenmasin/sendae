@@ -2,10 +2,10 @@
 
 namespace App\Http\Middleware;
 
-use App\Models\Setting;
-use App\Services\Synchronizer;
 use Closure;
+use App\Models\Setting;
 use Illuminate\Http\Request;
+use App\Services\Synchronizer;
 
 class LocalOrOwner
 {

@@ -71,7 +71,7 @@ test('unscheduling from a calendar dialog affects only that publication and pres
     assert.equal(app.state.value.publications[0].snapshot.title, 'Original snapshot');
     assert.equal(app.recovery.value, null);
     assert.equal(app.scheduledLocked.value, true, 'Another destination remains scheduled');
-    assert.equal(app.notice.value, 'Post unscheduled.');
+    assert.equal(app.notice.value, 'Destination moved to a separate draft in Posts. Other destinations keep their schedules.');
 });
 
 test('a publishing race refreshes completed cancellations, keeps remaining schedules locked and reports failure', async t => {
@@ -113,7 +113,7 @@ test('unscheduling waits for pending edits and leaves schedules intact when savi
     assert.equal(app.error.value, 'Save failed.');
 });
 
-for (const action of ['unschedule', 'reschedule']) {
+for (const action of ['unschedule', 'reschedule', 'recover']) {
     test(`${action} refreshes the original editor and exposes the independent post returned by the server`, async t => {
         const app = await setup(t);
         const original = JSON.parse(JSON.stringify(app.state.value));
@@ -131,7 +131,13 @@ for (const action of ['unschedule', 'reschedule']) {
 
         const publication = app.state.value.publications[0];
         if (action === 'unschedule') await app.unschedule(publication);
-        else await app.reschedule(publication, app.localDateTime(new Date(Date.now() + 86400000)));
+        else if (action === 'reschedule') await app.reschedule(publication, app.localDateTime(new Date(Date.now() + 86400000)));
+        else {
+            publication.status = 'failed';
+            app.openRecovery(publication);
+            app.recoveryAt.value = app.localDateTime(new Date(Date.now() + 86400000));
+            await app.recover();
+        }
 
         assert.equal(app.error.value, '');
         assert.equal(requests[0].body.id, 'x');

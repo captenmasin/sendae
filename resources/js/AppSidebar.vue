@@ -9,6 +9,10 @@ const navigation = computed(() => Object.entries(props.pages).filter(([name]) =>
 
 const {
     busy,
+    needsAttention,
+    sync,
+    syncError,
+    syncStatus,
     currentWorkspace,
     editWorkspace,
     newDraft,
@@ -20,6 +24,11 @@ const {
     syncing,
     unpublishedDrafts,
 } = useWorkspace();
+function workspaceLabel(workspace) {
+    const duplicates = state.value.settings.workspaces?.filter((item) => item.name === workspace.name) || [];
+
+    return duplicates.length > 1 ? `${workspace.name} · ${workspace.id.slice(-6)}` : workspace.name;
+}
 </script>
 
 <template>
@@ -43,7 +52,7 @@ const {
                     :key="workspace.id"
                     :value="workspace.id"
                 >
-                    {{ workspace.name }}
+                    {{ workspaceLabel(workspace) }}
                 </option>
             </select>
             <button
@@ -70,12 +79,15 @@ const {
             >
                 <span class="nav-icon"><Icon :name="view.icon" :size="16" /></span>
                 {{ label }}
-                <span v-if="label === 'Posts' || label === 'Calendar'" class="count">
-                    {{ label === 'Posts' ? unpublishedDrafts.length : queue.length }}
+                <span v-if="['Posts', 'Calendar'].includes(label)" class="count">
+                    {{ label === 'Posts' ? unpublishedDrafts.length : queue.length + needsAttention.filter((publication) => publication.status !== 'retry').length }}
                 </span>
             </button>
         </nav>
         <div class="sidebar-bottom">
+            <p class="sync-status" role="status" :title="syncError">{{ syncStatus }}</p>
+            <p v-if="syncError" class="sync-status">{{ syncError }}</p>
+            <button v-if="syncError" class="text-button" @click="sync()" :disabled="busy || syncing">Retry sync</button>
             <button
                 class="settings-nav"
                 :class="{ active: page === 'Settings' }"
@@ -88,3 +100,7 @@ const {
         </div>
     </aside>
 </template>
+
+<style scoped>
+.sync-status { color: var(--muted); font-size: 11px; padding: 8px; overflow-wrap: anywhere; }
+</style>

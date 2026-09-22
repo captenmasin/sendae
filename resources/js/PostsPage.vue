@@ -14,6 +14,7 @@ const {
     deleteDrafts,
     draftSummary,
     drafts,
+    isFullyPublished,
     editor,
     newDraft,
     postTitle,
@@ -142,7 +143,7 @@ async function deleteFromContextMenu() {
                 </button>
             </div>
             <template v-else>
-                <PostComposer v-if="editor && !publicationStatuses[editor.id]?.published" />
+                <PostComposer v-if="editor && !isFullyPublished(editor.id)" />
                 <div v-else class="empty posts-detail-empty">
                     <h2>{{ unpublishedDrafts.length ? 'Select a post' : 'Create your first post' }}</h2>
                     <p>{{ unpublishedDrafts.length ? 'Choose a post to edit, or start a new one.' : 'Write a draft, choose your accounts, and schedule it.' }}</p>

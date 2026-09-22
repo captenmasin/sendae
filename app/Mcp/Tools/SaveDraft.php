@@ -2,11 +2,11 @@
 
 namespace App\Mcp\Tools;
 
-use App\Services\Workspace;
-use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Laravel\Mcp\Request;
 use Laravel\Mcp\Response;
+use App\Services\Workspace;
 use Laravel\Mcp\Server\Tool;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
 
 class SaveDraft extends Tool
 {

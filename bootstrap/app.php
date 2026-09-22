@@ -1,13 +1,13 @@
 <?php
 
+use Illuminate\Http\Request;
 use App\Http\Middleware\LocalOrOwner;
-use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Foundation\Application;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\RequestException;
-use Illuminate\Http\Request;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Native\Desktop\Http\Middleware\PreventRegularBrowserAccess;
 

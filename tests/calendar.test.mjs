@@ -81,6 +81,7 @@ test('calendar shows every queued post in its local day and selects all posts fo
     assert.match(dayHtml, /Publishing post/);
     assert.match(dayHtml, /Later post/);
     assert.doesNotMatch(dayHtml, /Published post|Cancelled post|Other day|Invalid date|Missing date/);
+    assert.equal((dayHtml.match(/aria-label="Threads"/g) || []).length, 4);
     const dayPosts = nodes(today).filter(node => node?.props?.class === 'calendar-post');
     assert.equal(dayPosts.length, 4);
     dayPosts.at(-1).props.onClick({ stopPropagation() {} });
@@ -136,6 +137,7 @@ test('calendar combines accounts for the same draft and time while keeping separ
     const groupHtml = await renderToString(Vue.createSSRApp({ render: () => group }));
     assert.equal((groupHtml.match(/role="img"/g) || []).length, 5);
     assert.equal((groupHtml.match(/aria-label="Threads"/g) || []).length, 5);
+    assert.match(groupHtml, /width:14px;height:14px/);
     assert.doesNotMatch(groupHtml, /<img/);
 
     accounts[4].props.onClick({ stopPropagation() {} });
@@ -325,7 +327,51 @@ test('month navigation handles leap days, year boundaries, empty days, Today and
     assert.match(await app.html(), /No queued posts<\/h2>/);
     app.workspace.page.value = 'Published';
     assert.doesNotMatch(await app.html(), /schedule-calendar|Schedule view/);
-    assert.match(await app.html(), /No publications/);
+    assert.match(await app.html(), /No published posts/);
+});
+
+test('Published defaults to live posts and keeps cancelled posts in their own view', async () => {
+    const app = await calendar([
+        post('Live post', '2026-09-14T09:00:00Z', 'published'),
+        post('Cancelled post', '2026-09-14T10:00:00Z', 'cancelled'),
+    ]);
+    app.workspace.page.value = 'Published';
+
+    assert.match(await app.html(), /Live post/);
+    assert.doesNotMatch(await app.html(), /Cancelled post/);
+    app.button('Cancelled').props.onClick();
+    assert.match(await app.html(), /Cancelled post/);
+    assert.doesNotMatch(await app.html(), /Live post/);
+});
+
+test('queue scheduling previews server times, blocks missing slots, and never offers immediate publishing', async t => {
+    const app = await calendar();
+    const account = { id: 'account', provider: 'threads', name: 'Sendae', status: 'connected', slots: [] };
+    const draft = { id: 'draft', version: 1, title: 'Queue me', content: { items: [{ text: 'Hello', media_ids: [] }], overrides: {}, account_ids: [account.id] } };
+    app.workspace.state.value = { drafts: [draft], accounts: [account], media: [], publications: [], settings: { workspace_id: 'workspace', providers: {} } };
+    app.workspace.editor.value = structuredClone(draft);
+    app.workspace.openSchedule();
+    app.workspace.scheduleMode.value = 'queue';
+
+    assert.match(await app.html(), /Add weekly posting slots for Sendae first/);
+    assert.match(await app.html(), /Manage posting slots/);
+    assert.doesNotMatch(await app.html(), /<option value="now">Publish now/);
+
+    app.workspace.state.value.accounts[0].slots = [{ day: 1, time: '09:00' }];
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const preview = [{ account_id: account.id, name: account.name, timezone: 'Europe/London', scheduled_at: '2026-09-14T08:00:00+00:00' }];
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        assert.equal(url, '/local/schedulePreview');
+        assert.equal(JSON.parse(options.body).draft_id, draft.id);
+        return { ok: true, json: async () => preview };
+    });
+
+    await app.workspace.previewQueue();
+    assert.deepEqual(app.workspace.queuePreview.value, preview);
+    assert.match(await app.html(), /Sendae/);
+    assert.match(await app.html(), /Sep/);
 });
 
 test('the date and time dialog can unschedule without submitting a new date', async t => {
