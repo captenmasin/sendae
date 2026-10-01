@@ -12,7 +12,6 @@ const {
     needsAttention,
     sync,
     syncError,
-    syncStatus,
     currentWorkspace,
     editWorkspace,
     newDraft,
@@ -85,8 +84,7 @@ function workspaceLabel(workspace) {
             </button>
         </nav>
         <div class="sidebar-bottom">
-            <p class="sync-status" role="status" :title="syncError">{{ syncStatus }}</p>
-            <p v-if="syncError" class="sync-status">{{ syncError }}</p>
+            <p v-if="syncError" class="sync-status" role="alert">Sync failed · {{ syncError }}</p>
             <button v-if="syncError" class="text-button" @click="sync()" :disabled="busy || syncing">Retry sync</button>
             <button
                 class="settings-nav"

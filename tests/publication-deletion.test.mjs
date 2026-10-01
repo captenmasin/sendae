@@ -13,7 +13,7 @@ const render=new Function('Vue',compile(template,{mode:'function',prefixIdentifi
 
 function context(status,busy=false) {
  const post={id:'publication',status,snapshot:{title:'Post'},receipts:[]};
- return {publicationGroups:[{key:post.id,post,publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}]}],publishedView:'published',syncing:false,page:'Published',queue:[],publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}],busy,
+ return {publicationGroups:[{key:post.id,post,publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}]}],view:'history',needsAttention:[],syncing:false,page:'Calendar',queue:[],publications:[{id:'publication',status,snapshot:{title:'Post'},receipts:[]}],busy,
   symbols:{},accountFor:()=>null,date:()=>'',postTitle:p=>p.snapshot.title,publicationStatus:p=>p.status,canReschedule:()=>false,openRecovery:()=>{},deletePublication:()=>{},cancel:()=>{},postUrl:()=>null};
 }
 
@@ -29,13 +29,14 @@ test('cancelled publications show Recover and Delete, with Delete disabled while
  }
 });
 
-test('Delete confirms, calls the publication endpoint, and refreshes only after success', async () => {
+test('Delete hides a publication immediately, confirms remotely, and restores it on failure', async () => {
  const calls=[];
  const notice=Vue.ref('');
- let confirmed=false,failed=false;
+ const state=Vue.ref({publications:[{id:'publication',status:'cancelled'}]});
+ let confirmed=false,resolveRequest,rejectRequest;
  const {deletePublication}=runInNewContext(source.slice(source.indexOf('async function deletePublication('),source.indexOf('function editWorkspace('))+';({deletePublication})',{
-  confirm:()=>confirmed,act:fn=>fn(),notice,
-  api:async(path,data)=>{calls.push({path,...data});if(failed)throw new Error('Deletion failed');},
+  confirm:()=>confirmed,act:fn=>fn(),notice,state,
+  api:(path,data)=>{calls.push({path,...data});return new Promise((resolve,reject)=>{resolveRequest=resolve;rejectRequest=reject;});},
   refresh:async()=>calls.push('refresh'),
  });
  const ctx={...context('cancelled'),deletePublication};
@@ -43,20 +44,30 @@ test('Delete confirms, calls the publication endpoint, and refreshes only after 
  let button;
  while(nodes.length) {
   const node=nodes.shift();
-  if(node?.type==='button'&&node.children?.trim()==='Delete'){button=node;break;}
+  if(node?.type==='button'&&typeof node.children==='string'&&node.children.trim()==='Delete'){button=node;break;}
   if(Array.isArray(node?.children))nodes.push(...node.children);
  }
  assert.ok(button);
  await button.props.onClick();
  assert.deepEqual(calls,[]);
  confirmed=true;
- await button.props.onClick();
+ const deletion=button.props.onClick();
+ assert.deepEqual(state.value.publications,[]);
+ assert.deepEqual(calls,[{path:'deletePublication',id:'publication'}]);
+ resolveRequest();
+ await deletion;
  assert.deepEqual(calls,[{path:'deletePublication',id:'publication'},'refresh']);
  assert.equal(notice.value,'Publication deleted.');
+ await button.props.onClick();
+ assert.equal(calls.length,2);
  calls.length=0;
  notice.value='';
- failed=true;
- await assert.rejects(button.props.onClick(),/Deletion failed/);
+ state.value.publications=[{id:'publication',status:'cancelled'}];
+ const failedDeletion=button.props.onClick();
+ assert.deepEqual(state.value.publications,[]);
+ rejectRequest(new Error('Deletion failed'));
+ await assert.rejects(failedDeletion,/Deletion failed/);
  assert.deepEqual(calls,[{path:'deletePublication',id:'publication'}]);
+ assert.equal(state.value.publications[0].id,'publication');
  assert.equal(notice.value,'');
 });

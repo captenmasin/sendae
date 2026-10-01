@@ -25,6 +25,7 @@ class Workspace
             'media' => Media::latest()->get(), 'publications' => $publications,
             'settings' => ['workspace_id' => Setting::read('workspace_id'), 'workspaces' => json_decode(Setting::read('workspaces', '[]'), true), 'mode' => 'desktop', 'paired' => app(Synchronizer::class)->signedIn(),
                 'email' => Setting::read('account_email', ''),
+                'has_password' => Setting::read('has_password', '1') === '1',
                 'name' => Setting::read('account_name', ''),
                 'mcp_url' => rtrim(config('sendae.service_url'), '/').'/mcp',
                 'connections_url' => rtrim(config('sendae.service_url'), '/'),

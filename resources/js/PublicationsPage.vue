@@ -28,7 +28,12 @@ const {
 } = useWorkspace();
 
 const view = ref('calendar');
-const publishedView = ref('published');
+const views = [
+    { value: 'calendar', label: 'Calendar' },
+    { value: 'list', label: 'List' },
+    { value: 'attention', label: 'Attention' },
+    { value: 'history', label: 'History' },
+];
 const month = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
 const selectedDay = ref(null);
 const draggedPost = ref(null);
@@ -76,18 +81,27 @@ const calendarDays = computed(() => {
     });
 });
 const publications = computed(() => {
-    if (page.value === 'Published') return history.value.filter((publication) =>
-        publishedView.value === 'cancelled' ? publication.status === 'cancelled' : publication.status === 'published');
-    if (page.value !== 'Calendar') return history.value;
     if (view.value === 'attention') return needsAttention.value;
+    if (view.value === 'history') return history.value.filter((publication) => ['published', 'cancelled'].includes(publication.status));
     if (view.value === 'calendar' && selectedDay.value) {
         return publicationsByDay.value.get(selectedDay.value.toDateString()) || [];
     }
     return queue.value;
 });
-const publicationGroups = computed(() => page.value === 'Calendar' && view.value !== 'attention'
+const publicationGroups = computed(() => ['calendar', 'list'].includes(view.value)
     ? groupPublications(publications.value)
     : publications.value.map(post => ({ key: post.id, post, publications: [post] })));
+
+function moveTab(event) {
+    const index = views.findIndex((option) => option.value === view.value);
+    const next = event.key === 'ArrowRight' ? (index + 1) % views.length
+        : event.key === 'ArrowLeft' ? (index + views.length - 1) % views.length
+            : event.key === 'Home' ? 0 : event.key === 'End' ? views.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    view.value = views[next].value;
+    event.currentTarget.parentElement.querySelectorAll('[role="tab"]')[next].focus();
+}
 
 function changeMonth(offset) {
     month.value = new Date(month.value.getFullYear(), month.value.getMonth() + offset, 1);
@@ -132,18 +146,26 @@ async function dropOnDay(day) {
         <div>
             <h1>{{ page }}</h1>
         </div>
-        <div v-if="page === 'Calendar'" class="schedule-views" role="group" aria-label="Schedule view">
-            <button class="outline" :aria-pressed="view === 'calendar'" @click="view = 'calendar'">Calendar</button>
-            <button class="outline" :aria-pressed="view === 'list'" @click="view = 'list'">List</button>
-            <button class="outline" :aria-pressed="view === 'attention'" @click="view = 'attention'">Attention <span v-if="needsAttention.length">({{ needsAttention.length }})</span></button>
-        </div>
-        <div v-else-if="page === 'Published'" class="schedule-views" role="group" aria-label="Publication status">
-            <button class="outline" :aria-pressed="publishedView === 'published'" @click="publishedView = 'published'">Published</button>
-            <button class="outline" :aria-pressed="publishedView === 'cancelled'" @click="publishedView = 'cancelled'">Cancelled</button>
+        <div class="schedule-views" role="tablist" aria-label="Calendar views">
+            <button
+                v-for="option in views"
+                :id="'calendar-' + option.value + '-tab'"
+                :key="option.value"
+                type="button"
+                role="tab"
+                aria-controls="calendar-view-panel"
+                :aria-selected="view === option.value"
+                :tabindex="view === option.value ? 0 : -1"
+                :data-state="view === option.value ? 'active' : 'inactive'"
+                @click="view = option.value"
+                @keydown="moveTab"
+            >
+                {{ option.label }}<span v-if="option.value === 'attention' && needsAttention.length"> ({{ needsAttention.length }})</span>
+            </button>
         </div>
     </div>
-    <section class="content-section">
-        <template v-if="page === 'Calendar' && view === 'calendar'">
+    <section id="calendar-view-panel" class="content-section" role="tabpanel" :aria-labelledby="'calendar-' + view + '-tab'" tabindex="0">
+        <template v-if="view === 'calendar'">
             <div class="calendar-toolbar">
                 <div>
                     <h2 id="calendar-month" aria-live="polite">{{ monthLabel }}</h2>
@@ -236,7 +258,7 @@ async function dropOnDay(day) {
             <component :is="group.publications.length > 1 ? 'details' : 'div'" class="publication-accounts">
                 <summary v-if="group.publications.length > 1">Manage {{ group.publications.length }} accounts</summary>
                 <div v-for="p in group.publications" :key="p.id" class="publication-row">
-                    <AccountLogo v-if="page === 'Calendar'" :provider="accountFor(p)?.provider" :size="24" />
+                    <AccountLogo v-if="view === 'calendar' || view === 'list'" :provider="accountFor(p)?.provider" :size="24" />
                     <AccountLogo v-else :account="accountFor(p)" :size="42" />
                     <div class="publication-main">
                         <h3 v-if="group.publications.length === 1">{{ postTitle(p) }}</h3>
@@ -297,19 +319,19 @@ async function dropOnDay(day) {
                 </div>
             </component>
         </div>
-        <div v-if="page === 'Calendar' && view === 'calendar' && selectedDay && !publications.length" class="empty calendar-empty">
+        <div v-if="view === 'calendar' && selectedDay && !publications.length" class="empty calendar-empty">
             <p>No queued posts for this day.</p>
         </div>
         <div v-else-if="!publications.length" class="empty">
-            <div class="empty-art"><Icon :name="page === 'Calendar' ? 'Clock' : 'ArrowUpRight'" :size="36" /></div>
-            <h2>{{ page === 'Calendar' && view === 'attention' ? 'No publications need attention' : page === 'Calendar' ? 'No queued posts' : page === 'Published' && publishedView === 'cancelled' ? 'No cancelled publications' : page === 'Published' ? 'No published posts' : 'No publications' }}</h2>
+            <div class="empty-art"><Icon :name="view === 'history' ? 'ArrowUpRight' : 'Clock'" :size="36" /></div>
+            <h2>{{ view === 'attention' ? 'No publications need attention' : view === 'history' ? 'No publication history' : 'No queued posts' }}</h2>
             <p>
                 {{
-                    page === 'Calendar' && view === 'attention'
+                    view === 'attention'
                         ? 'Failed, missed, uncertain, and retry publications appear here.'
-                        : page === 'Calendar'
-                        ? 'Schedule a draft for a specific time or add it to your weekly queue.'
-                        : page === 'Published' && publishedView === 'cancelled' ? 'Cancelled posts can be recovered or deleted here.' : 'Published posts appear here.'
+                        : view === 'history'
+                        ? 'Published and cancelled posts appear here.'
+                        : 'Schedule a draft for a specific time or add it to your weekly queue.'
                 }}
             </p>
             <button class="outline" @click="page = 'Posts'">Back to posts</button>
@@ -324,8 +346,11 @@ async function dropOnDay(day) {
 .publication-networks { display: flex; flex-wrap: wrap; gap: 10px; }
 .publication-accounts summary { margin-top: 12px; color: var(--muted); cursor: pointer; font-size: 12px; }
 .publication-group .publication-row:last-child { border-bottom: 0; padding-bottom: 0; }
-.schedule-views, .calendar-navigation { display: flex; gap: 6px; }
-.schedule-views [aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.schedule-views { display: inline-flex; gap: 2px; max-width: 100%; overflow-x: auto; padding: 3px; border-radius: 8px; background: var(--subtle); }
+.schedule-views button { flex: 0 0 auto; padding: 7px 12px; border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 550; white-space: nowrap; }
+.schedule-views button:hover { color: var(--ink); }
+.schedule-views button[data-state="active"] { color: var(--ink); background: var(--surface); box-shadow: 0 1px 3px #0002; }
+.calendar-navigation { display: flex; gap: 6px; }
 .calendar-toolbar, .calendar-agenda-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
 .calendar-toolbar { margin-bottom: 20px; }
 .calendar-toolbar h2 { font-size: 20px; }

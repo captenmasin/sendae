@@ -21,6 +21,7 @@ const {
     syncing,
     theme,
     updateProfile,
+    requestPasswordSetup,
 } = useWorkspace();
 const mcpCopied = ref(false);
 onMounted(() => {
@@ -128,17 +129,24 @@ async function copyMcpUrl() {
                 <form class="settings-profile-form" @submit.prevent="updateProfile">
                     <div class="settings-fields">
                         <label>Name<input v-model="profileForm.name" maxlength="100" required autocomplete="name" :disabled="busy || savingProfile" /></label>
-                        <label>Email<input v-model="profileForm.email" type="email" required autocomplete="username" :disabled="busy || savingProfile" /></label>
+                        <label>Email<input v-model="profileForm.email" type="email" required autocomplete="username" :disabled="busy || savingProfile" :readonly="state.settings.has_password === false" /></label>
                     </div>
                     <p class="settings-hint">Your profile image uses Gravatar for this email address.</p>
                     <div class="settings-password">
-                        <h3>Password</h3>
-                        <p class="settings-hint">Enter your current password to change your email or set a new password.</p>
+                        <h3>{{ state.settings.has_password === false ? 'Set a password' : 'Change password' }}</h3>
+                        <template v-if="state.settings.has_password === false">
+                            <p class="settings-hint">You sign in through a social account. Set a Sendae password using a secure email link before changing your email address.</p>
+                            <button type="button" class="outline" :disabled="busy" @click="requestPasswordSetup">Email me a setup link</button>
+                        </template>
+                        <template v-else>
+                        <p class="settings-hint">Enter your current Sendae password to change your email or password.</p>
                         <label>Current password<input v-model="profileForm.current_password" type="password" autocomplete="current-password" :disabled="busy || savingProfile" :required="profileForm.email !== state.settings.email || !!profileForm.password" /></label>
                         <div class="settings-fields">
                             <label>New password<input v-model="profileForm.password" type="password" minlength="8" autocomplete="new-password" :disabled="busy || savingProfile" /></label>
                             <label>Confirm new password<input v-model="profileForm.password_confirmation" type="password" minlength="8" autocomplete="new-password" :disabled="busy || savingProfile" :required="!!profileForm.password" /></label>
                         </div>
+                        <button type="button" class="text-button" :disabled="busy" @click="requestPasswordSetup">Forgot your password? Email a reset link</button>
+                        </template>
                     </div>
                     <div class="settings-account-actions">
                         <button class="primary" :disabled="busy || savingProfile || syncing">{{ savingProfile ? 'Saving…' : 'Save account' }}</button>

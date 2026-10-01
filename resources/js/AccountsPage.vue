@@ -89,7 +89,7 @@ const {
                                 :disabled="busy || syncing"
                                 :aria-label="'Reconnect ' + a.name"
                             >Reconnect</button>
-                            <button class="text-button" @click="editSlots(a)" :disabled="busy || syncing">
+                            <button class="text-button" @click="editSlots(a)" :disabled="busy">
                                 <Icon name="Clock3" :size="13" />
                                 {{
                                     a.slots?.length

@@ -46,6 +46,25 @@ test('platform cards identify each account and remove disconnected accounts from
  assert.match(html,/Not connected/);
 });
 
+test('posting slots stay available during background sync and disable during an active operation', async () => {
+ const source=readFileSync(new URL('../resources/js/AccountsPage.vue',import.meta.url),'utf8');
+ const template=source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>'));
+ const render=new Function('Vue',compile(template,{mode:'function',prefixIdentifiers:true}).code)(Vue);
+ const Icon={props:['name','size'],template:'<svg></svg>'};
+
+ for (const busy of [false,true]) {
+  const html=await renderToString(Vue.createSSRApp({render,components:{AccountLogo,Icon},data:()=>({
+   sync:()=>{},connect:()=>{},editSlots:()=>{},disconnect:()=>{},providerStatus:()=>'',
+   names:{x:'X'},busy,syncing:true,canConnect:()=>true,
+   state:{accounts:[{id:'x',provider:'x',name:'Profile',status:'connected',slots:[]}]},
+  })}));
+  const button=html.match(/<button[^>]*>[^<]*<svg><\/svg>\s*Manage posting slots<\/button>/)?.[0];
+
+  assert.ok(button);
+  assert.equal(button.includes('disabled'),busy);
+ }
+});
+
 test('LinkedIn Pages explain when provider approval prevents connection', async () => {
  const source=readFileSync(new URL('../resources/js/AccountsPage.vue',import.meta.url),'utf8');
  const template=source.slice(source.indexOf('<template>')+10,source.lastIndexOf('</template>'));

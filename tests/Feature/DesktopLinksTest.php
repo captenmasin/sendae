@@ -132,3 +132,12 @@ test('consent cannot open an unsafe callback', function (): void {
     $this->postJson('/local/decideAuthorization', ['ticket' => $ticket, 'approved' => true])->assertUnprocessable();
     $this->assertSame([], $shell->openExternalCalls);
 });
+
+test('social sign in handoffs expose only the ticket and are consumed once', function (): void {
+    $ticket = str_repeat('t', 64);
+    app(DesktopLinks::class)->receive('sendae://sign-in?ticket='.$ticket.'&token=secret');
+    $this->getJson('/local/link')->assertExactJson(['action' => 'sign-in', 'ticket' => $ticket]);
+    $this->getJson('/local/link')->assertExactJson([]);
+    app(DesktopLinks::class)->receive('sendae://sign-in?ticket=bad');
+    $this->getJson('/local/link')->assertExactJson([]);
+});

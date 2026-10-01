@@ -13,7 +13,7 @@ class NativeAppServiceProvider implements ProvidesPhpIni
      */
     public function boot(): void
     {
-        Window::open()->title('Sendae')->width(1280)->height(850)->minWidth(900)->minHeight(640);
+        Window::open()->title('Sendae')->titleBarHiddenInset()->width(1280)->height(850)->minWidth(900)->minHeight(640);
     }
 
     /**

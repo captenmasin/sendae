@@ -28,14 +28,15 @@ test('local https uses the configured ca without disabling verification', functi
 });
 
 test('sign in uses fixed endpoint and hides encrypted token', function (): void {
+    config(['sendae.service_url' => 'https://api.sendae.app']);
     Setting::write('server_url', 'https://untrusted.example');
-    Http::fake(['service.example/api/session' => Http::response(['token' => 'private-token', 'workspace_id' => str_repeat('a', 64), 'email' => 'owner@example.com'])]);
+    Http::fake(['api.sendae.app/api/session' => Http::response(['token' => 'private-token', 'workspace_id' => str_repeat('a', 64), 'email' => 'owner@example.com'])]);
     $this->postJson('/local/signIn', ['email' => 'owner@example.com', 'password' => 'private-password', 'server_url' => 'https://untrusted.example'])->assertOk()->assertJsonPath('signed_in', true);
     $this->assertSame('private-token', Setting::read('server_token'));
     $this->assertStringNotContainsString('private-token', Setting::find('server_token')->getRawOriginal('value'));
     $this->assertDatabaseMissing('settings', ['key' => 'server_url']);
     $this->getJson('/local/state')->assertJsonPath('settings.paired', true)->assertDontSee('private-token')->assertDontSee('private-password')->assertJsonMissingPath('settings.server_url');
-    Http::assertSent(fn ($request) => $request->url() === 'https://service.example/api/session' && ! isset($request['server_url']));
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.sendae.app/api/session' && ! isset($request['server_url']));
     $this->postJson('/local/settings', ['server_url' => 'https://untrusted.example'])->assertNotFound();
 });
 
@@ -204,4 +205,53 @@ test('connect rejects an unexpected connection address', function (): void {
 
     $this->postJson('/local/connect', ['provider' => 'x'])->assertStatus(422);
     $this->assertSame([], $shell->openExternalCalls);
+});
+
+test('social login opens the fixed service and exchanges a device bound ticket', function (string $provider): void {
+    $ticket = str_repeat('t', 64);
+    $shell = Shell::fake();
+    Http::fake([
+        'service.example/api/social-login/'.$provider => Http::response(['ticket' => $ticket, 'url' => 'https://service.example/sign-in/'.$ticket]),
+        'service.example/api/social-login/finish/'.$ticket => Http::sequence()
+            ->push(['needs_profile' => true, 'name' => 'Person', 'email' => 'person@example.com'])
+            ->push(['token' => 'private-token', 'workspace_id' => str_repeat('b', 64), 'name' => 'Person', 'email' => 'person@example.com', 'has_password' => false]),
+    ]);
+    Setting::write('workspace_id', str_repeat('a', 64));
+    $draft = Draft::create(['title' => 'Keep private', 'content' => ['items' => [], 'overrides' => [], 'account_ids' => []]]);
+
+    $this->postJson('/local/socialSignIn', ['provider' => $provider])->assertOk()->assertExactJson(['opened' => true]);
+    $shell->assertOpenedExternal('https://service.example/sign-in/'.$ticket);
+    $this->postJson('/local/finishSocialSignIn', ['ticket' => str_repeat('z', 64)])->assertForbidden();
+    $this->postJson('/local/finishSocialSignIn', ['ticket' => $ticket])->assertOk()->assertJsonPath('needs_profile', true);
+    $this->assertNull(Setting::read('server_token'));
+    $this->postJson('/local/finishSocialSignIn', ['ticket' => $ticket, 'name' => 'Person', 'email' => 'person@example.com', 'verifier' => 'injected'])->assertOk()->assertJsonPath('signed_in', true)->assertDontSee('private-token');
+    $this->assertSame('private-token', Setting::read('server_token'));
+    $this->getJson('/local/state')->assertJsonCount(0, 'drafts')->assertJsonPath('settings.has_password', false);
+    $this->assertDatabaseHas('drafts', ['id' => $draft->id, 'workspace_id' => str_repeat('a', 64)]);
+    $this->postJson('/local/finishSocialSignIn', ['ticket' => $ticket])->assertForbidden();
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/finish/') && strlen($request['verifier']) === 64 && $request['verifier'] !== 'injected');
+    Http::assertSentCount(3);
+})->with(['google', 'facebook', 'x']);
+
+test('social login cannot open a foreign service or exchange an unsolicited ticket', function (): void {
+    $shell = Shell::fake();
+    Http::fake(['service.example/api/social-login/google' => Http::response(['ticket' => str_repeat('t', 64), 'url' => 'https://evil.example/login'])]);
+    $this->postJson('/local/socialSignIn', ['provider' => 'unknown'])->assertUnprocessable();
+    $this->postJson('/local/finishSocialSignIn', ['ticket' => str_repeat('t', 64)])->assertForbidden();
+    Http::assertNothingSent();
+    $this->postJson('/local/socialSignIn', ['provider' => 'google'])->assertStatus(502);
+    $this->assertSame([], $shell->openExternalCalls);
+    $this->assertNull(Setting::read('server_token'));
+    Http::assertSentCount(1);
+});
+
+test('sign out cancels a pending provider sign in', function (): void {
+    $ticket = str_repeat('t', 64);
+    Shell::fake();
+    Http::fake(['service.example/api/social-login/google' => Http::response(['ticket' => $ticket, 'url' => 'https://service.example/sign-in/'.$ticket])]);
+    $this->postJson('/local/socialSignIn', ['provider' => 'google'])->assertOk();
+    $this->postJson('/local/signOut')->assertOk();
+    $this->postJson('/local/finishSocialSignIn', ['ticket' => $ticket])->assertForbidden();
+    $this->assertNull(Setting::read('server_token'));
+    Http::assertSentCount(1);
 });

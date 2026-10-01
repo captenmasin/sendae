@@ -24,6 +24,11 @@ function nodes(tree) {
     return [tree, ...(Array.isArray(tree?.children) ? tree.children.flatMap(nodes) : [])];
 }
 
+function textContent(node) {
+    if (node?.type === Vue.Comment) return '';
+    return typeof node?.children === 'string' ? node.children : (Array.isArray(node?.children) ? node.children.map(textContent).join('') : '');
+}
+
 async function calendar(publications = []) {
     const Page = component('PublicationsPage.vue');
     const Dialogs = component('AppDialogs.vue');
@@ -48,13 +53,39 @@ async function calendar(publications = []) {
         workspace,
         nodes: () => nodes(tree()),
         dialogNodes: async () => { await html(); return nodes(dialogTree); },
-        button: label => nodes(tree()).find(node => node?.type === 'button' && (node.props?.['aria-label'] === label || (typeof node.children === 'string' && node.children.trim() === label))),
+        button: label => nodes(tree()).find(node => node?.type === 'button' && (node.props?.['aria-label'] === label || textContent(node).trim() === label)),
         days: () => nodes(tree()).filter(node => node?.type === 'div' && node.props?.class?.split(' ').includes('calendar-day')),
         html,
     };
 }
 
 const post = (id, scheduled_at, status = 'scheduled') => ({ id, account_id: 'account', scheduled_at, status, snapshot: { title: id } });
+
+test('Calendar tabs expose selected state and support arrow-key navigation', async () => {
+    const app = await calendar();
+    assert.match(await app.html(), /role="tablist" aria-label="Calendar views"/);
+    assert.equal(app.button('Calendar').props['aria-selected'], true);
+    assert.equal(app.button('Calendar').props.tabindex, 0);
+    let focused = -1;
+    let prevented = false;
+    app.button('Calendar').props.onKeydown({
+        key: 'ArrowLeft',
+        preventDefault() { prevented = true; },
+        currentTarget: { parentElement: { querySelectorAll: () => Array.from({ length: 4 }, (_, index) => ({ focus() { focused = index; } })) } },
+    });
+    assert.equal(prevented, true);
+    assert.equal(focused, 3);
+    assert.equal(app.button('History').props['aria-selected'], true);
+    assert.equal(app.button('Calendar').props.tabindex, -1);
+    assert.match(await app.html(), /role="tabpanel" aria-labelledby="calendar-history-tab"/);
+    const currentTarget = { parentElement: { querySelectorAll: () => Array.from({ length: 4 }, (_, index) => ({ focus() { focused = index; } })) } };
+    app.button('History').props.onKeydown({ key: 'Home', preventDefault() {}, currentTarget });
+    assert.equal(app.button('Calendar').props['aria-selected'], true);
+    assert.equal(focused, 0);
+    app.button('Calendar').props.onKeydown({ key: 'End', preventDefault() {}, currentTarget });
+    assert.equal(app.button('History').props['aria-selected'], true);
+    assert.equal(focused, 3);
+});
 
 test('calendar shows every queued post in its local day and selects all posts for a day', async t => {
     t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-08-31T12:00:00Z') });
@@ -325,23 +356,22 @@ test('month navigation handles leap days, year boundaries, empty days, Today and
 
     app.workspace.state.value.publications = [];
     assert.match(await app.html(), /No queued posts<\/h2>/);
-    app.workspace.page.value = 'Published';
-    assert.doesNotMatch(await app.html(), /schedule-calendar|Schedule view/);
-    assert.match(await app.html(), /No published posts/);
+    app.button('History').props.onClick();
+    assert.doesNotMatch(await app.html(), /schedule-calendar/);
+    assert.match(await app.html(), /No publication history/);
 });
 
-test('Published defaults to live posts and keeps cancelled posts in their own view', async () => {
+test('Calendar history keeps published links and cancelled recovery available', async () => {
     const app = await calendar([
         post('Live post', '2026-09-14T09:00:00Z', 'published'),
         post('Cancelled post', '2026-09-14T10:00:00Z', 'cancelled'),
     ]);
-    app.workspace.page.value = 'Published';
+    app.button('History').props.onClick();
 
     assert.match(await app.html(), /Live post/);
-    assert.doesNotMatch(await app.html(), /Cancelled post/);
-    app.button('Cancelled').props.onClick();
     assert.match(await app.html(), /Cancelled post/);
-    assert.doesNotMatch(await app.html(), /Live post/);
+    assert.match(await app.html(), />\s*Recover\s*<\/button>/);
+    assert.match(await app.html(), />\s*Delete\s*<\/button>/);
 });
 
 test('queue scheduling previews server times, blocks missing slots, and never offers immediate publishing', async t => {

@@ -59,3 +59,36 @@ test('scheduling retries keep their request ID and a new confirmed action gets a
  assert.notEqual(requests[1].request_id,requests[2].request_id);
  assert.equal(stored.size,0);
 });
+
+test('confirmation waits for background sync and closes only after scheduling succeeds', async () => {
+ const source=readFileSync(new URL('../resources/js/workspace.js',import.meta.url),'utf8');
+ const act=source.slice(source.indexOf('async function act('),source.indexOf('function changed('));
+ const schedule=source.slice(source.indexOf('async function schedule('),source.indexOf('async function sendSchedule('));
+ for (const failure of [false,true]) {
+  let finishSync;
+  const requests=[];
+  const context={
+   busy:{value:false},syncing:{value:true},scheduleBlocked:{value:false},
+   syncTask:new Promise(resolve=>{finishSync=resolve;}),
+   error:{value:''},report:error=>{context.error.value=error.message;},
+   notice:{value:''},scheduledLocked:{value:false},scheduledUpdateErrors:{value:{}},
+   editor:{value:{id:'draft',version:2}},scheduleMode:{value:'exact'},
+   scheduleAt:{value:'2026-10-02T12:00'},scheduleOpen:{value:true},page:{value:'Posts'},
+   flush:async()=>{},refresh:async()=>{},
+   sendSchedule:async payload=>{requests.push(payload);if(failure)throw new Error('Schedule rejected');},
+  };
+
+  const confirmation=runInNewContext(act+schedule+';schedule()',context);
+  assert.equal(context.busy.value,true);
+  assert.equal(context.scheduleOpen.value,true);
+  assert.equal(requests.length,0);
+  context.syncing.value=false;
+  finishSync();
+  await confirmation;
+
+  assert.equal(requests.length,1);
+  assert.equal(context.busy.value,false);
+  assert.equal(context.scheduleOpen.value,failure);
+  assert.equal(context.error.value,failure?'Schedule rejected':'');
+ }
+});

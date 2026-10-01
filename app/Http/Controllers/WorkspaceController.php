@@ -120,6 +120,20 @@ class WorkspaceController extends Controller
         return $s->signIn($data);
     }
 
+    public function socialSignIn(Request $request, Synchronizer $sync): array
+    {
+        return $sync->socialSignIn($request->validate(['provider' => 'required|string|in:google,facebook,x'])['provider']);
+    }
+
+    public function finishSocialSignIn(Request $request, Synchronizer $sync): array
+    {
+        $data = $request->validate(['ticket' => 'required|string|regex:/^[A-Za-z0-9]{64}$/', 'name' => 'nullable|string|max:100', 'email' => 'nullable|email|max:255', 'password' => 'nullable|string|max:1000']);
+        $ticket = $data['ticket'];
+        unset($data['ticket']);
+
+        return $sync->finishSocialSignIn($ticket, $data);
+    }
+
     public function registration(Request $r, Synchronizer $s): array
     {
         return $s->accountRequest('register', $r->validate(['name' => 'required|string|max:100', 'email' => 'required|email|max:255', 'password' => 'required|string|min:8|max:128|confirmed', 'password_confirmation' => 'required|string|max:128']));

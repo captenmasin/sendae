@@ -36,17 +36,20 @@ test('manual and automatic synchronization wait while deletion is in progress',a
  await sync(false);
 });
 
-function deletionContext({fail,confirmed=true,saveFails=false,editorId='first'}={}) {
+function deletionContext({fail,confirmed=true,saveFails=false,editorId='first',savePromise=null,apiOverride=null}={}) {
  const calls=[],prompts=[];
  const context={
-  savePromise:null,
+  savePromise,
+  deletingDraftIds:new Set(),
+  savedDeletingDrafts:new Map(),
   busy:Vue.ref(false),syncing:Vue.ref(false),notice:Vue.ref(''),error:Vue.ref(''),
   editor:Vue.ref({id:editorId}),pending:Vue.ref(true),workingItems:Vue.ref(null),
   state:Vue.ref({drafts:['first','second','third'].map(id=>({id})),publications:[{id:'queued',draft_id:'first',status:'scheduled'},{id:'live',draft_id:'first',status:'published'}]}),
   selectedDraftIds:Vue.ref(['first','second']),
   confirm:message=>{prompts.push(message);return confirmed;},
+  report:()=>{},
   flush:async()=>{calls.push('save');if(saveFails)throw new Error('Save failed');},
-  api:async(path,{id})=>{assert.equal(path,'deleteDraft');calls.push(id);if(id===fail)throw new Error('Deletion failed');return {cancelled_publication_ids:id==='first'?['queued']:[]};},
+  api:apiOverride || (async(path,{id})=>{assert.equal(path,'deleteDraft');calls.push(id);if(id===fail)throw new Error('Deletion failed');return {cancelled_publication_ids:id==='first'?['queued']:[]};}),
  };
  context.act=async fn=>{context.busy.value=true;try{await fn();}catch(e){context.error.value=e.message;}finally{context.busy.value=false;}};
  const actions=runInNewContext(source.slice(source.indexOf('async function deleteDraft()'),source.indexOf('async function newDraft()'))+';({deleteDraft,deleteDrafts})',context);
@@ -94,6 +97,32 @@ test('bulk deletion deletes only selected posts and closes a deleted composer wi
  assert.equal(result.notice.value,'2 posts deleted.');
 });
 
+test('selected posts disappear before an in-flight save and server deletion finish',async()=>{
+ let finishSave,finishDeletion;
+ const savePromise=new Promise(resolve=>{finishSave=resolve;});
+ const calls=[];
+ const result=deletionContext({savePromise,apiOverride:async(path,{id})=>{
+  calls.push(id);
+  await new Promise(resolve=>{finishDeletion=resolve;});
+  return {cancelled_publication_ids:[]};
+ }});
+ const deletion=result.deleteDrafts(['first']);
+ assert.equal(result.prompts.length,1);
+ assert.equal(result.busy.value,true);
+ assert.equal(result.deletingDraftIds.has('first'),true);
+ assert.deepEqual(result.state.value.drafts.map(d=>d.id),['second','third'],result.error.value);
+ assert.equal(result.editor.value,null);
+ assert.deepEqual([...result.selectedDraftIds.value],['second']);
+ assert.deepEqual(calls,[]);
+ finishSave();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(calls,['first']);
+ assert.deepEqual(result.state.value.drafts.map(d=>d.id),['second','third']);
+ finishDeletion();
+ await deletion;
+ assert.equal(result.notice.value,'Post deleted.');
+});
+
 test('bulk deletion of other posts saves the open editor first',async()=>{
  const result=deletionContext({editorId:'third'});
  await result.deleteDrafts(result.selectedDraftIds.value);
@@ -105,6 +134,8 @@ test('bulk deletion of other posts saves the open editor first',async()=>{
 
 test('partial failure removes confirmed deletions and retains remaining selections for retry',async()=>{
  const result=deletionContext({fail:'second',editorId:'second'});
+ result.workingItems.value=[{text:'Unpublished network edit'}];
+ result.savedDeletingDrafts.set('second',{id:'second',version:3});
  result.selectedDraftIds.value.push('third');
  await result.deleteDrafts(result.selectedDraftIds.value);
 
@@ -112,6 +143,8 @@ test('partial failure removes confirmed deletions and retains remaining selectio
  assert.deepEqual(result.state.value.drafts.map(d=>d.id),['second','third']);
  assert.deepEqual([...result.selectedDraftIds.value],['second','third']);
  assert.equal(result.editor.value.id,'second');
+ assert.equal(result.editor.value.version,3);
+ assert.equal(result.workingItems.value[0].text,'Unpublished network edit');
  assert.equal(result.notice.value,'');
  assert.equal(result.error.value,'Deletion failed');
 });

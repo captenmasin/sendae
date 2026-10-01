@@ -16,7 +16,7 @@ class DesktopLinks
         parse_str($parts['query'] ?? '', $data);
         $action = $parts['host'] ?? '';
         $rules = match ($action) {
-            'connection', 'authorize' => ['ticket' => 'required|string|regex:/^[A-Za-z0-9]{64}$/'],
+            'connection', 'authorize', 'sign-in' => ['ticket' => 'required|string|regex:/^[A-Za-z0-9]{64}$/'],
             'reset-password' => ['token' => 'required|string|regex:/^[A-Za-z0-9]{64}$/', 'email' => 'required|email|max:255'],
             default => null,
         };

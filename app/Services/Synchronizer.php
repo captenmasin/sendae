@@ -7,6 +7,7 @@ use App\Models\Media;
 use App\Models\Account;
 use App\Models\Setting;
 use App\Models\Publication;
+use Illuminate\Support\Str;
 use Illuminate\Http\UploadedFile;
 use Native\Desktop\Facades\Shell;
 use Illuminate\Support\Facades\DB;
@@ -72,28 +73,70 @@ class Synchronizer
         return Cache::lock('sendae-sync', 180)->block(2, function () use ($credentials) {
             $response = $this->client()->post('session', $credentials)->throw();
             abort_unless($response->successful(), 502, 'Sendae sign-in could not be completed.');
-            $data = Validator::make($response->json(), [
-                'token' => 'required|string|max:10000', 'workspace_id' => 'required|string|size:64', 'name' => 'nullable|string|max:100', 'email' => 'required|email',
-            ])->validate();
-            $changed = Setting::read('workspace_id') !== $data['workspace_id'];
-            DB::transaction(function () use ($data, $changed) {
-                if ($changed) {
-                    Setting::whereIn('key', ['providers', 'workspaces'])->delete();
-                }
-                // Adopt only legacy drafts written before accounts were required.
-                foreach (['accounts', 'drafts', 'media', 'publications'] as $table) {
-                    DB::table($table)->whereNull('workspace_id')->update(['workspace_id' => $data['workspace_id']]);
-                }
-                Setting::write('server_token', $data['token']);
-                Setting::write('workspace_id', $data['workspace_id']);
-                Setting::write('session_origin', rtrim(config('sendae.service_url'), '/'));
-                Setting::write('account_email', $data['email']);
-                Setting::write('account_name', $data['name'] ?? '');
-                Setting::where('key', 'server_url')->delete();
-            });
+            Cache::forget('desktop_login');
 
-            return ['signed_in' => true, 'workspace_changed' => $changed];
+            return $this->storeSession($response->json());
         });
+    }
+
+    public function socialSignIn(string $provider): array
+    {
+        $verifier = Str::random(64);
+        $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+        $response = $this->client()->post('social-login/'.$provider, ['challenge' => $challenge])->throw();
+        abort_unless($response->successful(), 502, 'Sendae sign-in could not be started.');
+        $data = Validator::make($response->json(), ['ticket' => 'required|string|regex:/^[A-Za-z0-9]{64}$/', 'url' => 'required|url'])->validate();
+        $expected = rtrim(config('sendae.service_url'), '/').'/sign-in/'.$data['ticket'];
+        abort_unless($data['url'] === $expected, 502, 'The sign-in address was invalid.');
+        Cache::put('desktop_login', ['ticket' => $data['ticket'], 'verifier' => $verifier], now()->addMinutes(10));
+        Shell::openExternal($expected);
+
+        return ['opened' => true];
+    }
+
+    /** @param array{name?: ?string, email?: ?string, password?: ?string} $profile */
+    public function finishSocialSignIn(string $ticket, array $profile): array
+    {
+        return Cache::lock('sendae-sync', 180)->block(2, function () use ($ticket, $profile): array {
+            $login = Cache::get('desktop_login');
+            abort_unless($login && hash_equals($login['ticket'], $ticket), 403, 'Start sign-in on this device first.');
+            $response = $this->client()->post('social-login/finish/'.$ticket, ['verifier' => $login['verifier'], ...$profile])->throw();
+            if ($response->json('needs_profile') === true) {
+                return ['needs_profile' => true, 'name' => $response->json('name', ''), 'email' => $response->json('email', '')];
+            }
+            abort_unless($response->successful(), 502, 'Sendae sign-in could not be completed.');
+            $result = $this->storeSession($response->json());
+            Cache::forget('desktop_login');
+
+            return $result;
+        });
+    }
+
+    /** @param array{token: string, workspace_id: string, name?: ?string, email: string} $payload */
+    private function storeSession(array $payload): array
+    {
+        $data = Validator::make($payload, [
+            'token' => 'required|string|max:10000', 'workspace_id' => 'required|string|size:64', 'name' => 'nullable|string|max:100', 'email' => 'required|email', 'has_password' => 'sometimes|boolean',
+        ])->validate();
+        $changed = Setting::read('workspace_id') !== $data['workspace_id'];
+        DB::transaction(function () use ($data, $changed) {
+            if ($changed) {
+                Setting::whereIn('key', ['providers', 'workspaces'])->delete();
+            }
+            // Adopt only legacy drafts written before accounts were required.
+            foreach (['accounts', 'drafts', 'media', 'publications'] as $table) {
+                DB::table($table)->whereNull('workspace_id')->update(['workspace_id' => $data['workspace_id']]);
+            }
+            Setting::write('server_token', $data['token']);
+            Setting::write('workspace_id', $data['workspace_id']);
+            Setting::write('session_origin', rtrim(config('sendae.service_url'), '/'));
+            Setting::write('account_email', $data['email']);
+            Setting::write('account_name', $data['name'] ?? '');
+            Setting::write('has_password', ($data['has_password'] ?? true) ? '1' : '0');
+            Setting::where('key', 'server_url')->delete();
+        });
+
+        return ['signed_in' => true, 'workspace_changed' => $changed];
     }
 
     public function saveWorkspace(array $data): array
@@ -179,6 +222,7 @@ class Synchronizer
                     abort_unless($response->successful(), 502, 'Sendae sign-out could not be completed.');
                 }
             }
+            Cache::forget('desktop_login');
             Setting::whereIn('key', ['server_token', 'session_origin', 'account_email', 'account_name'])->delete();
 
             return ['signed_out' => true];
@@ -246,6 +290,9 @@ class Synchronizer
             $state = $this->request()->get('state')->throw()->json();
             DB::transaction(function () use ($state) {
                 Setting::write('providers', json_encode($state['settings']['providers'] ?? []));
+                if (isset($state['settings']['has_password'])) {
+                    Setting::write('has_password', $state['settings']['has_password'] ? '1' : '0');
+                }
                 if (isset($state['settings']['workspaces'])) {
                     Setting::write('workspaces', json_encode($state['settings']['workspaces']));
                 }
@@ -354,9 +401,12 @@ class Synchronizer
     {
         $this->requireAuth();
         $profile = $this->request()->patch('profile', $data)->throw()->json();
-        $profile = Validator::make($profile, ['name' => 'required|string|max:100', 'email' => 'required|email'])->validate();
+        $profile = Validator::make($profile, ['name' => 'required|string|max:100', 'email' => 'required|email', 'has_password' => 'sometimes|boolean'])->validate();
         Setting::write('account_name', $profile['name']);
         Setting::write('account_email', $profile['email']);
+        if (isset($profile['has_password'])) {
+            Setting::write('has_password', $profile['has_password'] ? '1' : '0');
+        }
 
         return $profile;
     }

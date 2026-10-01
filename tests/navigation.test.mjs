@@ -105,6 +105,21 @@ function textContent(node) {
     return typeof node?.children === 'string' ? node.children : (node?.children || []).map(textContent).join('');
 }
 
+test('window drag areas use existing page space without covering controls or shifting content', async () => {
+    const css = readFileSync(new URL('../resources/css/app.css', import.meta.url), 'utf8');
+    assert.match(css, /\.window-drag-region\s*\{[^}]*left:\s*96px;[^}]*height:\s*30px;[^}]*app-region:\s*drag/s);
+    assert.match(css, /\.sidebar\s*\{[^}]*padding:\s*30px 18px 16px/s);
+    assert.doesNotMatch(css, /\.app-shell\s*>\s*main\s*\{[^}]*padding-top/s);
+    assert.match(css, /\.app-shell\s*>\s*main\s*>\s*header\s*\{[^}]*app-region:\s*drag/s);
+    assert.match(css, /\.posts-list-heading\s*\{[^}]*app-region:\s*drag/s);
+    assert.match(css, /\.posts-list-heading \.compose-button\s*\{[^}]*app-region:\s*no-drag/s);
+
+    for (const authenticated of [false, true]) {
+        const app = application({ authenticated, loaded: true });
+        assert.match(await app.render(), /<div class="window-drag-region" aria-hidden="true"><\/div>/);
+    }
+});
+
 test('workspace notifications use timed toasts, repeat successes, and preserve inline errors', async t => {
     const success = t.mock.method(Sonner.toast, 'success', () => {});
     const error = t.mock.method(Sonner.toast, 'error', () => {});
@@ -152,7 +167,7 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
     assert.match(await app.render(), /Still editing/);
     const originalEditor = app.workspace.editor.value;
 
-    for (const page of ['Calendar', 'Published', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
+    for (const page of ['Calendar', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
         const button = findNode(app.nodes.get('AppSidebar.vue'), node => node?.type === 'button' && textContent(node).includes(page));
         assert.ok(button, page + ' navigation exists');
         button.props.onClick();
@@ -166,7 +181,6 @@ test('sidebar navigation renders each screen and keeps the open composer and wor
         const active = findNode(app.nodes.get('AppSidebar.vue'), node => node?.props?.['aria-current'] === 'page');
         assert.ok(textContent(active).includes(page));
         if (page === 'Calendar') { assert.match(html, /Queued post/); assert.doesNotMatch(html, /Published post/); }
-        if (page === 'Published') { assert.match(html, /Published post/); assert.doesNotMatch(html, /Queued post/); }
         if (page === 'Settings') assert.match(html, /person@example.com/);
         if (page === 'Posts') assert.match(html, /Still editing/);
     }
@@ -187,7 +201,7 @@ test('refresh restores every selected sidebar page', async t => {
     } };
     t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
 
-    for (const page of ['Calendar', 'Published', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
+    for (const page of ['Calendar', 'Activity', 'Analytics', 'Accounts', 'Settings', 'Posts']) {
         const app = application({ authenticated: true, loaded: true });
         await app.render();
         const unmount = app.mountNotifications();
@@ -596,7 +610,7 @@ test('account images appear across the workspace while Posts and Calendar use ne
         drafts: [draft], accounts: [account], media: [], settings: { providers: {} },
         publications: ['scheduled', 'published'].map(status => ({ id: status, account_id: account.id, draft_id: status === 'published' ? 'old-draft' : draft.id, status, snapshot: { title: 'Post' }, metrics_status: 'available' })),
     } });
-    for (const page of ['Posts', 'Calendar', 'Published', 'Analytics', 'Accounts']) {
+    for (const page of ['Posts', 'Calendar', 'Analytics', 'Accounts']) {
         await app.render();
         app.workspace.page.value = page;
         const html = await app.render();
@@ -650,7 +664,7 @@ test('legacy timestamp titles become previews across drafts, calendars, publicat
     app.workspace.search.value = 'launch';
     assert.equal(app.workspace.drafts.value.length, 1);
 
-    for (const page of ['Calendar', 'Published', 'Analytics']) {
+    for (const page of ['Calendar', 'Analytics']) {
         app.workspace.page.value = page;
         html = await app.render();
         assert.match(html, page === 'Calendar' ? /The original scheduled announcement/ : /The original published announcement/);
@@ -848,23 +862,23 @@ test('published drafts cannot open or appear in Posts, and sync closes a newly p
     assert.deepEqual(app.workspace.selectedDraftIds.value, []);
     assert.doesNotMatch(await app.render(), /aria-label="Post title"|Published draft/);
     assert.equal(await app.workspace.openDraft(draft), false);
-    assert.equal(app.workspace.page.value, 'Published');
+    assert.equal(app.workspace.page.value, 'Activity');
     const html = await app.render();
     assert.match(html, /The published snapshot/);
     assert.doesNotMatch(html, /aria-label="Post title"|>Recover<|>Change date/);
 });
 
-test('legacy Queue navigation opens Calendar after an app reload', async t => {
+test('removed Queue and Published navigation opens Calendar after an app reload', async t => {
     const originalWindow = globalThis.window;
-    globalThis.window = { sessionStorage: { getItem: () => 'Queue', setItem() {} } };
     t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
-    const app = application({ authenticated: true, loaded: true });
-
-    const html = await app.render();
-
-    assert.equal(app.workspace.page.value, 'Calendar');
-    assert.match(html, /<h1>Calendar<\/h1>/);
-    assert.doesNotMatch(html, />\s*Queue\s*</);
+    for (const removedPage of ['Queue', 'Published']) {
+        globalThis.window = { sessionStorage: { getItem: () => removedPage, setItem() {} } };
+        const app = application({ authenticated: true, loaded: true });
+        const html = await app.render();
+        assert.equal(app.workspace.page.value, 'Calendar');
+        assert.match(html, /<h1>Calendar<\/h1>/);
+        assert.doesNotMatch(html, new RegExp('>\\s*' + removedPage + '\\s*</'));
+    }
 });
 
 test('settings expose workspace management, theme choices and profile editing together', async () => {
@@ -1048,7 +1062,7 @@ test('background sync failure remains visible until a successful retry', async t
     t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
     const state = { drafts: [], accounts: [], media: [], publications: [], settings: { paired: true, providers: {} } };
     const app = application({ authenticated: true, loaded: true, state });
-    await app.render();
+    assert.doesNotMatch(await app.render(), /sync-status|Retry sync/);
     let failed = true;
     t.mock.method(globalThis, 'fetch', async url => {
         if (failed) throw new Error('Connection unavailable');
@@ -1056,17 +1070,14 @@ test('background sync failure remains visible until a successful retry', async t
     });
     await app.workspace.sync(false);
     const html = await app.render();
-    assert.match(html, /Connection unavailable/);
+    assert.match(html, /role="alert">Sync failed · Connection unavailable/);
     assert.match(html, /Retry sync/);
     assert.equal(app.workspace.error.value, '');
     failed = false;
     await app.workspace.sync(false);
     assert.equal(app.workspace.syncError.value, '');
-    assert.ok(app.workspace.lastSyncedAt.value);
     assert.equal(app.workspace.notice.value, '');
-    assert.doesNotMatch(await app.render(), /Retry sync/);
-    app.workspace.state.value.drafts.push({ id: 'local', dirty: true, content: { items: [], overrides: {}, account_ids: [] } });
-    assert.equal(app.workspace.syncStatus.value, 'Changes waiting to sync');
+    assert.doesNotMatch(await app.render(), /sync-status|Retry sync/);
 });
 
 test('metric refresh keeps unrelated workspace actions available', async t => {
@@ -1110,4 +1121,120 @@ test('duplicate workspace names include a stable suffix in the selector', async 
     const html = await app.render();
     assert.match(html, /Personal · aaaaaa/);
     assert.match(html, /Personal · bbbbbb/);
+});
+
+
+test('background sync keeps controls enabled and queues actions until refreshed state arrives', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const draft = { id: 'draft', title: 'Launch', version: 1, content: { items: [{ text: 'Ready', media_ids: [] }], overrides: {}, account_ids: ['account'] } };
+    const state = { drafts: [draft], accounts: [{ id: 'account', name: 'Profile', provider: 'x', status: 'connected' }], media: [], publications: [], settings: { paired: true, providers: {} } };
+    const app = application({ authenticated: true, loaded: true, state, editor: structuredClone(draft) });
+    await app.render();
+    const calls = [];
+    let releaseSync;
+    let releaseState;
+    t.mock.method(globalThis, 'fetch', async url => {
+        calls.push(url);
+        if (url === '/local/sync') await new Promise(resolve => { releaseSync = resolve; });
+        if (url === '/local/state') await new Promise(resolve => { releaseState = resolve; });
+        return { ok: true, json: async () => url === '/local/state' ? state : {} };
+    });
+
+    const sync = app.workspace.sync(false);
+    await app.render();
+    assert.equal(app.workspace.syncing.value, false);
+    assert.equal(app.workspace.busy.value, false);
+    for (const [component, label] of [['AppSidebar.vue', 'New post'], ['PostComposer.vue', 'Post now'], ['PostComposer.vue', 'Schedule']]) {
+        const control = findNode(app.nodes.get(component), node => node?.type === 'button' && textContent(node).includes(label));
+        assert.ok(control, label);
+        assert.ok(!control.props.disabled, label);
+    }
+    await app.workspace.sync(false);
+    assert.deepEqual(calls, ['/local/sync']);
+    const close = app.workspace.closeDraft();
+    assert.equal(app.workspace.busy.value, true);
+    assert.equal(app.workspace.editor.value.id, draft.id);
+    releaseSync();
+    await app.render();
+    assert.deepEqual(calls, ['/local/sync', '/local/state']);
+    assert.equal(app.workspace.editor.value.id, draft.id);
+    releaseState();
+    await Promise.all([sync, close]);
+    assert.equal(app.workspace.editor.value, null);
+    assert.equal(app.workspace.busy.value, false);
+});
+
+
+test('manual refresh locks controls and a failed background sync still releases a queued action', async t => {
+    const originalDocument = globalThis.document;
+    globalThis.document = { querySelector: () => ({ content: 'csrf' }) };
+    t.after(() => { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; });
+    const state = { drafts: [], accounts: [], media: [], publications: [], settings: { paired: true, providers: {} } };
+    const app = application({ authenticated: true, loaded: true, state });
+    await app.render();
+    let rejectSync;
+    t.mock.method(globalThis, 'fetch', () => new Promise((_resolve, reject) => { rejectSync = reject; }));
+
+    const manual = app.workspace.sync();
+    await app.render();
+    assert.equal(app.workspace.syncing.value, true);
+    rejectSync(new Error('Offline'));
+    await manual;
+    assert.equal(app.workspace.syncing.value, false);
+    assert.equal(app.workspace.error.value, 'Offline');
+    const background = app.workspace.sync(false);
+    await app.render();
+    const close = app.workspace.closeDraft();
+    rejectSync(new Error('Offline'));
+    await Promise.all([background, close]);
+    assert.equal(app.workspace.busy.value, false);
+    assert.equal(app.workspace.syncError.value, 'Offline');
+    assert.equal(app.workspace.error.value, '');
+});
+
+test('social sign-in hides passwords until an existing account needs linking', async () => {
+    const selected = [];
+    const app = application({ loaded: true });
+    await app.render();
+    app.workspace.startSocialSignIn = provider => selected.push(provider);
+    await app.render();
+    for (const provider of ['Google', 'Facebook', 'X']) {
+        const button = findNode(app.nodes.get('AuthScreen.vue'), node => node?.type === 'button' && textContent(node).trim() === 'Continue with ' + provider);
+        assert.ok(button);
+        assert.equal(button.props.class, 'outline');
+        button.props.onClick();
+    }
+    assert.deepEqual(selected, ['google', 'facebook', 'x']);
+    app.workspace.authMode.value = 'socialProfile';
+    assert.match(await app.render(), /Finish signing in/);
+    const password = findNode(app.nodes.get('AuthScreen.vue'), node => node?.type === 'input' && node.props?.type === 'password');
+    assert.equal(password, undefined);
+    app.workspace.authMode.value = 'socialLink';
+    assert.match(await app.render(), /Connect your account/);
+    const linkingPassword = findNode(app.nodes.get('AuthScreen.vue'), node => node?.type === 'input' && node.props?.type === 'password');
+    assert.ok(Object.hasOwn(linkingPassword.props, 'required'));
+    assert.doesNotMatch(await app.render(), /Continue with Google/);
+});
+
+
+test('social account settings offer an email setup link instead of current password fields', async () => {
+    const app = application({ authenticated: true, loaded: true, page: 'Settings', state: {
+        drafts: [], accounts: [], media: [], publications: [], settings: { providers: {}, has_password: false, name: 'Person', email: 'person@example.com' },
+    } });
+    await app.render();
+    let requested = false;
+    app.workspace.requestPasswordSetup = () => { requested = true; };
+    const html = await app.render();
+    assert.match(html, /Set a password/);
+    assert.doesNotMatch(html, /Current password|Confirm new password/);
+    const button = findNode(app.nodes.get('SettingsPage.vue'), node => node?.type === 'button' && textContent(node).includes('Email me a setup link'));
+    button.props.onClick();
+    assert.equal(requested, true);
+    const email = findNode(app.nodes.get('SettingsPage.vue'), node => node?.type === 'input' && node.props?.type === 'email');
+    assert.equal(email.props.readonly, true);
+    app.workspace.state.value.settings.has_password = true;
+    assert.match(await app.render(), /Change password/);
+    assert.match(await app.render(), /Current password/);
 });

@@ -4,7 +4,7 @@ import AccountLogo from './AccountLogo.vue';
 import Icon from './Icon.vue';
 import { useWorkspace } from './workspace.js';
 
-const { activity, busy, date, openDraft, page, state } = useWorkspace();
+const { activity, busy, date, isFullyPublished, openDraft, page, state } = useWorkspace();
 const labels = {
     created: 'Draft created',
     updated: 'Draft updated',
@@ -64,7 +64,7 @@ const visibleActivity = computed(() => activity.value.filter((event) =>
                     </p>
                 </div>
                 <button
-                    v-if="event.draft && state.drafts.some((draft) => draft.id === event.draft.id)"
+                    v-if="event.draft && !isFullyPublished(event.draft.id) && state.drafts.some((draft) => draft.id === event.draft.id)"
                     class="text-button"
                     @click="openDraft(event.draft)"
                     :disabled="busy"

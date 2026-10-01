@@ -14,7 +14,8 @@ export function createWorkspace() {
         authMode = ref('signIn'),
         fullName = ref(''),
         confirmPassword = ref(''),
-        authNotice = ref('');
+        authNotice = ref(''),
+        socialLoginTicket = ref('');
     const page = ref('Posts'),
         editor = ref(null),
         network = ref('shared'),
@@ -136,14 +137,12 @@ export function createWorkspace() {
     const pending = ref(false);
     const scheduledUpdateErrors = ref({});
     const syncError = ref('');
-    const lastSyncedAt = ref(null);
-    const syncStatus = computed(() => syncing.value ? 'Syncing…' : syncError.value
-        ? 'Sync failed · data may be outdated' : pending.value || saving.value || state.value.drafts.some(draft => draft.dirty)
-            || state.value.media.some(media => !media.synced) ? 'Changes waiting to sync'
-            : lastSyncedAt.value ? 'Last synced ' + date(lastSyncedAt.value) : 'Not synced this session');
     let editorRevision = 0;
+    const deletingDraftIds = new Set();
+    const savedDeletingDrafts = new Map();
     let savePromise = null,
         syncRequest = null,
+        syncTask = null,
         interval,
         countdownTimer;
     async function api(path, data, retried = false) {
@@ -170,14 +169,17 @@ export function createWorkspace() {
             authenticated.value = false;
         }
         const result = await response.json();
-        if (!response.ok)
-            throw new Error(
+        if (!response.ok) {
+            const failure = new Error(
                 Object.values(result.errors || {})
                     .flat()
                     .join(' ') ||
                     result.message ||
                     'The request failed.',
             );
+            failure.errors = result.errors || {};
+            throw failure;
+        }
         return result;
     }
     async function refresh() {
@@ -201,6 +203,7 @@ export function createWorkspace() {
         error.value = '';
         busy.value = true;
         try {
+            if (syncTask) await syncTask;
             return await fn();
         } catch (e) {
             report(e);
@@ -235,9 +238,12 @@ export function createWorkspace() {
                             delete editor.value.deleted_at;
                         }
                     }
-                    const index = state.value.drafts.findIndex((d) => d.id === result.draft.id);
-                    if (index < 0) state.value.drafts.unshift(result.draft);
-                    else state.value.drafts[index] = result.draft;
+                    if (deletingDraftIds.has(result.draft.id)) savedDeletingDrafts.set(result.draft.id, result.draft);
+                    else {
+                        const index = state.value.drafts.findIndex((d) => d.id === result.draft.id);
+                        if (index < 0) state.value.drafts.unshift(result.draft);
+                        else state.value.drafts[index] = result.draft;
+                    }
                     if (scheduledLocked.value) {
                         try {
                             await sendSchedule({ draft_id: payload.id, version: result.draft.version, mode: 'preserve', update: true }, result.draft);
@@ -264,7 +270,7 @@ export function createWorkspace() {
     async function openDraft(draft) {
         if (busy.value || syncing.value) return;
         if (isFullyPublished(draft.id)) {
-            page.value = 'Published';
+            page.value = 'Activity';
             return false;
         }
         return act(async () => {
@@ -308,26 +314,54 @@ export function createWorkspace() {
             return;
         await act(async () => {
             notice.value = '';
-            if (editor.value && !ids.includes(editor.value.id)) await flush();
-            else {
+            const originalDrafts = [...state.value.drafts];
+            const originalSelection = [...selectedDraftIds.value];
+            const originalEditor = editor.value;
+            const originalPending = pending.value;
+            const originalWorkingItems = workingItems.value;
+            const confirmed = new Set();
+            ids.forEach((id) => deletingDraftIds.add(id));
+            state.value.drafts = state.value.drafts.filter((draft) => !deletingDraftIds.has(draft.id));
+            selectedDraftIds.value = selectedDraftIds.value.filter((id) => !deletingDraftIds.has(id));
+            if (editor.value && deletingDraftIds.has(editor.value.id)) {
+                editor.value = null;
                 pending.value = false;
-                await savePromise?.catch(report);
-                pending.value = false;
+                workingItems.value = null;
             }
-            for (const id of ids) {
-                const result = await api('deleteDraft', { id });
-                for (const publication of state.value.publications) {
-                    if (result.cancelled_publication_ids?.includes(publication.id)) publication.status = 'cancelled';
-                }
-                state.value.drafts = state.value.drafts.filter((d) => d.id !== id);
-                selectedDraftIds.value = selectedDraftIds.value.filter((selected) => selected !== id);
-                if (editor.value?.id === id) {
-                    editor.value = null;
+            try {
+                if (originalEditor && !ids.includes(originalEditor.id)) await flush();
+                else {
+                    await savePromise?.catch(report);
                     pending.value = false;
-                    workingItems.value = null;
                 }
+                for (const id of ids) {
+                    const result = await api('deleteDraft', { id });
+                    confirmed.add(id);
+                    for (const publication of state.value.publications) {
+                        if (result.cancelled_publication_ids?.includes(publication.id)) publication.status = 'cancelled';
+                    }
+                }
+                notice.value = ids.length === 1 ? 'Post deleted.' : ids.length + ' posts deleted.';
+            } catch (error) {
+                originalDrafts.forEach((draft, index) => {
+                    if (ids.includes(draft.id) && !confirmed.has(draft.id)) {
+                        state.value.drafts.splice(Math.min(index, state.value.drafts.length), 0, savedDeletingDrafts.get(draft.id) || draft);
+                    }
+                });
+                selectedDraftIds.value = originalSelection.filter((id) => !confirmed.has(id));
+                if (originalEditor && ids.includes(originalEditor.id) && !confirmed.has(originalEditor.id)) {
+                    editor.value = originalEditor;
+                    editor.value.version = savedDeletingDrafts.get(originalEditor.id)?.version ?? editor.value.version;
+                    pending.value = originalPending;
+                    workingItems.value = originalWorkingItems;
+                }
+                throw error;
+            } finally {
+                ids.forEach((id) => {
+                    deletingDraftIds.delete(id);
+                    savedDeletingDrafts.delete(id);
+                });
             }
-            notice.value = ids.length === 1 ? 'Post deleted.' : ids.length + ' posts deleted.';
         });
     }
     async function newDraft() {
@@ -591,29 +625,35 @@ export function createWorkspace() {
     }
     async function sync(manual = true) {
         if (busy.value) return;
-        if (!authenticated.value || syncing.value || !state.value.settings.paired) return;
-        syncing.value = true;
-        try {
-            await flush();
-            const revision = editorRevision;
-            syncRequest = (async () => {
-                await api('sync', {});
-                await refresh();
-            })();
-            await syncRequest;
-            lastSyncedAt.value = new Date().toISOString();
-            syncError.value = '';
-            if (editor.value && !pending.value && !saving.value) {
-                const index = state.value.drafts.findIndex((draft) => draft.id === editor.value.id);
-                if (editorRevision === revision) editor.value = clone(state.value.drafts[index] || null);
-                else if (index >= 0) state.value.drafts[index] = clone(editor.value);
+        if (!authenticated.value || syncTask || !state.value.settings.paired) return;
+        syncing.value = manual;
+        syncTask = (async () => {
+            try {
+                await flush();
+                const revision = editorRevision;
+                syncRequest = (async () => {
+                    await api('sync', {});
+                    await refresh();
+                })();
+                await syncRequest;
+                syncError.value = '';
+                if (editor.value && !pending.value && !saving.value) {
+                    const index = state.value.drafts.findIndex((draft) => draft.id === editor.value.id);
+                    if (editorRevision === revision) editor.value = clone(state.value.drafts[index] || null);
+                    else if (index >= 0) state.value.drafts[index] = clone(editor.value);
+                }
+            } catch (e) {
+                syncError.value = e.message;
+                if (manual) report(e);
+            } finally {
+                syncRequest = null;
+                syncing.value = false;
             }
-        } catch (e) {
-            syncError.value = e.message;
-            if (manual) report(e);
+        })();
+        try {
+            await syncTask;
         } finally {
-            syncRequest = null;
-            syncing.value = false;
+            syncTask = null;
         }
     }
     function openSchedule() {
@@ -659,7 +699,7 @@ export function createWorkspace() {
         editSlots(account);
     }
     async function schedule(mode = scheduleMode.value) {
-        if (busy.value || syncing.value) return;
+        if (busy.value) return;
         if (scheduleBlocked.value) { error.value = 'Resolve the destination issues before scheduling.'; return; }
         const updating = scheduledLocked.value;
         await act(async () => {
@@ -727,6 +767,7 @@ export function createWorkspace() {
         });
     }
     async function deletePublication(p) {
+        if (!state.value.publications.some((publication) => publication.id === p.id)) return;
         if (
             !confirm(
                 'Delete this cancelled publication? It will no longer be recoverable. Any live social posts will stay unchanged.',
@@ -734,7 +775,14 @@ export function createWorkspace() {
         )
             return;
         await act(async () => {
-            await api('deletePublication', { id: p.id });
+            const index = state.value.publications.findIndex((publication) => publication.id === p.id);
+            state.value.publications.splice(index, 1);
+            try {
+                await api('deletePublication', { id: p.id });
+            } catch (error) {
+                state.value.publications.splice(index, 0, p);
+                throw error;
+            }
             await refresh();
             notice.value = 'Publication deleted.';
         });
@@ -785,7 +833,6 @@ export function createWorkspace() {
         notice.value = '';
         state.value = { drafts: [], accounts: [], media: [], publications: [], settings: { providers: {} } };
         syncError.value = '';
-        lastSyncedAt.value = null;
         await refresh();
         await sync(false);
     }
@@ -844,6 +891,12 @@ export function createWorkspace() {
         });
         await sync();
     }
+    async function requestPasswordSetup() {
+        await act(async () => {
+            await api('forgotPassword', { email: state.value.settings.email });
+            notice.value = 'Check your email for a secure link to set your Sendae password. This does not change your social sign-in.';
+        });
+    }
     async function updateProfile() {
         await act(async () => {
             savingProfile.value = true;
@@ -866,6 +919,48 @@ export function createWorkspace() {
             }
         });
     }
+    async function startSocialSignIn(provider) {
+        await act(async () => {
+            socialLoginTicket.value = '';
+            await api('socialSignIn', { provider });
+            authNotice.value = 'Finish signing in in your browser, then return to Sendae.';
+        });
+    }
+    async function finishSocialSignIn(ticket, profile = {}) {
+        const signedIn = await act(async () => {
+            let result;
+            try {
+                result = await api('finishSocialSignIn', { ticket, ...profile });
+            } catch (failure) {
+                if (failure.errors?.password) {
+                    authMode.value = 'socialLink';
+                    authNotice.value = 'An account already uses this email. Enter its Sendae password to connect this sign-in securely.';
+                    password.value = '';
+                }
+                throw failure;
+            }
+            password.value = '';
+            if (result.needs_profile) {
+                socialLoginTicket.value = ticket;
+                fullName.value = result.name || '';
+                email.value = result.email || '';
+                authMode.value = 'socialProfile';
+                authNotice.value = 'Confirm your name and email to finish signing in.';
+                return false;
+            }
+            socialLoginTicket.value = '';
+            authNotice.value = '';
+            editor.value = null;
+            pending.value = false;
+            workingItems.value = null;
+            network.value = 'shared';
+            page.value = 'Posts';
+            await refresh();
+            syncError.value = '';
+            return true;
+        });
+        if (signedIn) await sync(false);
+    }
     async function signIn() {
         await act(async () => {
             if (authenticated.value) await flush();
@@ -880,11 +975,11 @@ export function createWorkspace() {
             await refresh();
             await flush();
             syncError.value = '';
-            lastSyncedAt.value = null;
         });
         await sync(false);
     }
     function chooseAuth(mode) {
+        socialLoginTicket.value = '';
         authMode.value = mode;
         error.value = '';
         authNotice.value = '';
@@ -893,6 +988,8 @@ export function createWorkspace() {
     }
     async function submitAuth() {
         if (authMode.value === 'signIn') return signIn();
+        if (['socialProfile', 'socialLink'].includes(authMode.value))
+            return finishSocialSignIn(socialLoginTicket.value, { name: fullName.value, email: email.value, password: password.value });
         await act(async () => {
             const action = authMode.value === 'register' ? 'registration' : authMode.value;
             const data = { email: email.value };
@@ -903,6 +1000,12 @@ export function createWorkspace() {
                     password_confirmation: confirmPassword.value,
                 });
             const result = await api(action, data);
+            if (action === 'registration') {
+                authMode.value = 'signIn';
+                authNotice.value = '';
+                confirmPassword.value = '';
+                return signIn();
+            }
             authNotice.value = result.message;
             password.value = '';
             confirmPassword.value = '';
@@ -1081,6 +1184,7 @@ export function createWorkspace() {
         connectTimer = setTimeout(poll, 4000);
     }
     async function handleLink(link) {
+        if (link.action === 'sign-in') return finishSocialSignIn(link.ticket);
         if (link.action === 'reset-password') {
             resetForm.value = {
                 email: link.email,
@@ -1410,7 +1514,6 @@ export function createWorkspace() {
         isFullyPublished,
         isRefreshingMetric,
         loaded,
-        lastSyncedAt,
         localDateTime,
         names,
         network,
@@ -1479,17 +1582,18 @@ export function createWorkspace() {
         slots,
         slotsAccount,
         state,
+        startSocialSignIn,
         submitAuth,
         switchWorkspace,
         sync,
         syncError,
         syncing,
-        syncStatus,
         theme,
         timezone,
         unlockScheduledEdit,
         unschedule,
         updateProfile,
+        requestPasswordSetup,
         upload,
         workspaceForm,
         workspaceImagePreview,

@@ -26,7 +26,6 @@ watch(error, (message) => {
 const pages = {
     Posts: { component: PostsPage, icon: 'Inbox' },
     Calendar: { component: PublicationsPage, icon: 'CalendarDays' },
-    Published: { component: PublicationsPage, icon: 'ArrowUpRight' },
     Activity: { component: ActivityPage, icon: 'Activity' },
     Analytics: { component: AnalyticsPage, icon: 'ChartColumn' },
     Accounts: { component: AccountsPage, icon: 'AtSign' },
@@ -34,7 +33,7 @@ const pages = {
 };
 try {
     const storedPage = window.sessionStorage.getItem('sendae.page');
-    const savedPage = ['Queue', 'Needs attention'].includes(storedPage) ? 'Calendar' : storedPage;
+    const savedPage = ['Queue', 'Needs attention', 'Published'].includes(storedPage) ? 'Calendar' : storedPage;
     if (Object.hasOwn(pages, savedPage)) page.value = savedPage;
 } catch {
     // Navigation remains available when session storage is unavailable.
@@ -49,6 +48,7 @@ watch(page, (value) => {
 </script>
 
 <template>
+    <div class="window-drag-region" aria-hidden="true"></div>
     <AuthScreen v-if="!authenticated" />
     <div v-else class="app-shell">
         <AppSidebar :pages="pages" />

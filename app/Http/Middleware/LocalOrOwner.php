@@ -13,7 +13,7 @@ class LocalOrOwner
     {
         abort_unless(in_array($request->ip(), ['127.0.0.1', '::1']) && in_array($request->getHost(), ['localhost', '127.0.0.1', 'sendae.test']), 403);
 
-        if (! $request->is('/', 'local/csrf', 'local/link', 'local/signIn', 'local/signOut', 'local/registration', 'local/forgotPassword', 'local/resetPassword')) {
+        if (! $request->is('/', 'local/csrf', 'local/link', 'local/signIn', 'local/socialSignIn', 'local/finishSocialSignIn', 'local/signOut', 'local/registration', 'local/forgotPassword', 'local/resetPassword')) {
             app(Synchronizer::class)->requireAuth();
             if ($request->header('X-Workspace-Id')) {
                 abort_unless($request->header('X-Workspace-Id') === Setting::read('workspace_id'), 409, 'The active workspace changed. Reopen this window before editing.');
